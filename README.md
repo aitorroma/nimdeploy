@@ -28,7 +28,8 @@ run gets its own log file, `latest.log` always points at the newest one, and
 From a [release](https://github.com/aitorroma/nimdeploy/releases) (Linux amd64/arm64, static binary):
 
 ```bash
-VERSION=v0.1.0 ARCH=amd64   # or arm64
+ARCH=amd64   # or arm64
+VERSION=$(curl -fsSL https://api.github.com/repos/aitorroma/nimdeploy/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
 curl -fsSL https://github.com/aitorroma/nimdeploy/releases/download/$VERSION/nimdeploy_${VERSION}_linux_${ARCH}.tar.gz | tar xz
 cd nimdeploy_${VERSION}_linux_${ARCH}
 sudo ./install.sh
@@ -160,6 +161,59 @@ apps of the user that runs it. To make it work from nimdeploy:
 
 Prefer `pm2 reload <app> --update-env`: zero downtime in cluster mode, same as
 restart in fork mode. See [`deploy/examples/deploy-pm2.sh`](deploy/examples/deploy-pm2.sh).
+
+## Laravel
+
+[`deploy/examples/deploy-laravel.sh`](deploy/examples/deploy-laravel.sh) does a
+fast-forward to the pushed commit, then `composer install`, `npm ci && npm run
+build`, `migrate`, `storage:link`, the artisan caches, `queue:restart` (and
+`horizon:terminate` if Horizon is installed). It runs the PHP/Node commands on
+the host or inside a docker compose service (Laravel Sail), and prints each one
+to the log as `$ command`. Settings go in the deploy's `env`:
+
+```toml
+[deploy.shop]
+path = "/hooks/shop"
+repository = "acme/shop"
+branch = "main"
+secret_env = "SHOP_WEBHOOK_SECRET"
+working_directory = "/srv/shop"            # the git checkout, with docker-compose.yml
+command = "/usr/local/bin/deploy-laravel.sh"
+timeout = "20m"
+env = [
+  "COMPOSE_SERVICE=laravel.test",          # empty/absent: run on the host
+  "RESTART_SERVICES=laravel.worker",       # workers that ignore queue:restart
+  "OWNER=www-data:www-data",               # chown storage/ bootstrap/cache/
+  "EXTRA_MIGRATIONS=tenants:migrate",      # e.g. stancl/tenancy
+  "WWWUSER=1000", "WWWGROUP=1000",         # used by Sail's docker-compose.yml
+]
+```
+
+Other options: `PHP_FPM_SERVICE=php8.3-fpm` (host only, reloads PHP-FPM to
+clear OPcache), `MAINTENANCE=1` (`artisan down` around the migrations, `up`
+even if they fail), `ARTISAN_CACHE="config:cache route:cache view:cache
+event:cache"` (the default leaves out `route:cache` and `event:cache`, which
+fail with closure routes), `COMPOSER_NO_DEV=0`.
+
+Permissions:
+
+- **Docker:** the service user must be able to run `docker compose`, i.e. be in
+  the `docker` group (equivalent to root) or be root
+  (`sudo SERVICE_USER=root ./install.sh`). It also needs access to the checkout:
+  a project under `/root/` only works as root.
+- **PHP-FPM on the host:** allow the reload in sudoers, e.g.
+  `deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.3-fpm`.
+
+If `composer.lock` is generated on a newer PHP than production (8.4 locally,
+8.3 on the server), pin the platform in `composer.json` so every machine
+resolves dependencies for production's PHP, instead of patching the lock
+during deploys:
+
+```json
+"config": {
+    "platform": { "php": "8.3.0" }
+}
+```
 
 ## Log format
 
