@@ -1,0 +1,25 @@
+[Unit]
+Description=nimdeploy - GitHub webhook deployer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+EnvironmentFile=/etc/nimdeploy/secrets.env
+ExecStartPre=/usr/local/bin/nimdeploy -config /etc/nimdeploy/config.toml -check
+ExecStart=/usr/local/bin/nimdeploy -config /etc/nimdeploy/config.toml
+# systemctl reload: validate first, then SIGHUP (running deploys continue).
+ExecReload=/usr/local/bin/nimdeploy -config /etc/nimdeploy/config.toml -check
+ExecReload=/bin/kill -HUP $MAINPID
+LogsDirectory=nimdeploy
+LogsDirectoryMode=0750
+Restart=on-failure
+RestartSec=5
+# Let running deploys finish (shutdown_timeout) before systemd kills them.
+TimeoutStopSec=6min
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

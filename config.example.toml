@@ -1,0 +1,63 @@
+[server]
+listen = "127.0.0.1:9000"
+# max_body_bytes = 26214400   # 25 MB, the GitHub maximum
+# shutdown_timeout = "5m"     # wait this long for running deploys on stop
+# Bearer token for /status and /deploy (manual deploys, `nimdeploy run`).
+# Without it /status is open and manual deploys are disabled.
+api_token_env = "NIMDEPLOY_API_TOKEN"
+
+[logging]
+directory = "/var/log/nimdeploy"
+retain = 30                   # log files kept per deploy (0 = keep all)
+
+# Chat notifications (optional). Formats: slack, discord, telegram, json.
+# on = "failure" sends failures and the first success after one (recovery).
+#[notify]
+#format = "slack"
+#on = "failure"               # failure | always | never
+#url_env = "NOTIFY_WEBHOOK_URL"
+#log_lines = 20               # last log lines included on failure
+# Telegram instead of url_env:
+#format = "telegram"
+#telegram_token_env = "TELEGRAM_BOT_TOKEN"
+#telegram_chat_id = "-1001234567890"
+
+# GitHub commit statuses (optional): shows the deploy result next to each
+# commit. Fine-grained token with "Commit statuses: Read and write".
+#[github]
+#token_env = "GITHUB_TOKEN"
+
+[deploy.frontend]
+path = "/hooks/frontend"
+repository = "acme/frontend"
+branch = "main"
+secret_env = "FRONTEND_WEBHOOK_SECRET"
+working_directory = "/var/www/frontend"
+command = "/usr/local/bin/deploy-frontend.sh"
+timeout = "20m"
+
+[deploy.agency]
+path = "/hooks/agency"
+repository = "acme/agency"
+branch = "main"
+secret_env = "AGENCY_WEBHOOK_SECRET"
+working_directory = "/var/www/agency"
+command = "/usr/local/bin/deploy-agency.sh"
+timeout = "20m"
+lock = true                   # one deploy at a time
+queue = true                  # a push during a deploy runs after it (latest push wins);
+                              # false = reject it with 409
+log_output = true             # write stdout/stderr to the log file
+
+[deploy.backend]
+path = "/hooks/backend"
+repository = "acme/backend"
+branch = "main"
+secret_env = "BACKEND_WEBHOOK_SECRET"
+working_directory = "/srv/backend"
+command = "/bin/bash"
+args = ["-c", "set -euxo pipefail; git pull --ff-only; npm ci; npm run build; pm2 reload backend --update-env"]
+# systemd's PATH is minimal: add the directory where node/npm/pm2 live
+# (e.g. ~/.nvm/versions/node/v22.x/bin). Check with: which pm2
+env = ["NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin"]
+timeout = "10m"
