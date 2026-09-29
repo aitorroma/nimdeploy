@@ -46,7 +46,7 @@ func NewNotifier(cfg *Config) *Notifier {
 
 // CommitStatus sets a GitHub commit status ("pending", "success", "failure").
 func (n *Notifier) CommitStatus(d *DeployConfig, t Trigger, state, description string) {
-	if n == nil || n.github.token == "" || !fullSHARe.MatchString(t.Commit) || t.Repository == "" {
+	if n == nil || n.github.token == "" || !n.github.commitStatus || !fullSHARe.MatchString(t.Commit) || t.Repository == "" {
 		return
 	}
 	if len(description) > 140 {
@@ -69,13 +69,17 @@ func (n *Notifier) CommitStatus(d *DeployConfig, t Trigger, state, description s
 }
 
 // Finished reports the end of a deploy: commit status and chat notification.
-func (n *Notifier) Finished(d *DeployConfig, t Trigger, st State, recovered bool, logPath string) {
-	if n == nil {
+// A deploy superseded by a newer push is not reported: the newer one will be.
+func (n *Notifier) Finished(d *DeployConfig, t Trigger, st State, recovered bool, logPath string, superseded bool) {
+	if n == nil || superseded {
 		return
 	}
-	if st.Status == StatusSuccess {
+	switch st.Status {
+	case StatusSuccess:
 		n.CommitStatus(d, t, "success", "Deployed in "+st.Duration)
-	} else {
+	case StatusSkipped:
+		n.CommitStatus(d, t, "failure", "Not deployed: "+st.Error)
+	default:
 		n.CommitStatus(d, t, "failure", "Deploy failed: "+st.Error)
 	}
 
@@ -137,6 +141,8 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 		fmt.Fprintf(&b, "✅ %s deploy recovered on %s\n", st.Deploy, n.host)
 	case st.Status == StatusSuccess:
 		fmt.Fprintf(&b, "✅ %s deployed on %s\n", st.Deploy, n.host)
+	case st.Status == StatusSkipped:
+		fmt.Fprintf(&b, "⏭️ %s NOT deployed on %s\n", st.Deploy, n.host)
 	default:
 		fmt.Fprintf(&b, "❌ %s deploy FAILED on %s\n", st.Deploy, n.host)
 	}
@@ -149,6 +155,11 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 	}
 	if st.Trigger == TriggerManual {
 		b.WriteString(" (manual)")
+	}
+	if st.Status == StatusSkipped {
+		fmt.Fprintf(&b, "\n%s", st.Error)
+		fmt.Fprintf(&b, "\nlog: %s", logPath)
+		return b.String()
 	}
 	fmt.Fprintf(&b, "\nduration %s", st.Duration)
 	if st.Status != StatusSuccess {

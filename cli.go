@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -152,7 +153,7 @@ func followLog(c *client, name, path, logName string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		if st.Log != logName || st.Status != StatusRunning {
+		if st.Log != logName || !isActive(st.Status) {
 			_, _ = io.Copy(os.Stdout, f)
 			if st.Log == logName && st.Status == StatusSuccess {
 				return 0
@@ -211,6 +212,9 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 			started = st.StartedAt.Local().Format("2006-01-02 15:04:05")
 		}
 		status := st.Status
+		if st.Status == StatusWaiting {
+			status = "waiting (CI)"
+		}
 		if st.Queued != nil {
 			status += " (+1 queued)"
 		}
@@ -218,7 +222,7 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 	}
 	tw.Flush()
 	for _, name := range cfg.DeployNames() {
-		if st := states[name]; st.Status == StatusFailed && st.Error != "" {
+		if st := states[name]; (st.Status == StatusFailed || st.Status == StatusSkipped) && st.Error != "" {
 			fmt.Printf("\n%s: %s\n", name, st.Error)
 		}
 	}
@@ -309,4 +313,64 @@ location %s {
 		block("^~ "+base+"/deploy/", "API: manual deploys (bearer token)")
 	}
 	return b.String()
+}
+
+func cliHistory(cfg *Config, envFile string, args []string) int {
+	fset := flag.NewFlagSet("history", flag.ExitOnError)
+	limit := fset.Int("n", 20, "number of deploys to show")
+	asJSON := fset.Bool("json", false, "print raw JSON")
+	fset.Parse(args)
+	names := cfg.DeployNames()
+	if fset.NArg() > 0 {
+		names = fset.Args()[:1]
+		if _, ok := cfg.Deploy[names[0]]; !ok {
+			fmt.Fprintf(os.Stderr, "unknown deploy %q (have: %s)\n", names[0], strings.Join(cfg.DeployNames(), ", "))
+			return 2
+		}
+	}
+	c, err := newClient(cfg, envFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	var all []State
+	for _, name := range names {
+		var h []State
+		if _, err := c.do(http.MethodGet, fmt.Sprintf("/history/%s?limit=%d", name, *limit), nil, &h); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		all = append(all, h...)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Log > all[j].Log })
+	if len(all) > *limit {
+		all = all[:*limit]
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(all)
+		return 0
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "DEPLOY\tSTATUS\tSTARTED\tDURATION\tTRIGGER\tCOMMIT\tBY\tLOG\tNOTE")
+	for _, st := range all {
+		started := "-"
+		if st.StartedAt != nil {
+			started = st.StartedAt.Local().Format("2006-01-02 15:04:05")
+		}
+		note := st.Error
+		if len(note) > 60 {
+			note = note[:57] + "..."
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", st.Deploy, st.Status, started, dash(st.Duration),
+			dash(st.Trigger), dash(shortSHA(st.Commit)), dash(st.Pusher), dash(st.Log), note)
+	}
+	tw.Flush()
+	if len(all) == 0 {
+		fmt.Println("no deploys yet")
+	}
+	return 0
 }

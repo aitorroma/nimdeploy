@@ -36,6 +36,7 @@ retain = 30                   # log files kept per deploy (0 = keep all)
 # commit. Fine-grained token with "Commit statuses: Read and write".
 #[github]
 #token_env = "GITHUB_TOKEN"
+#commit_status = false        # e.g. a read-only token used only for wait_for_ci
 
 [deploy.frontend]
 path = "/hooks/frontend"
@@ -54,6 +55,10 @@ secret_env = "AGENCY_WEBHOOK_SECRET"
 working_directory = "/var/www/agency"
 command = "/usr/local/bin/deploy-agency.sh"
 timeout = "20m"
+# Deploy only after these GitHub Actions workflows pass for the pushed commit
+# (needs [github] token_env with "Actions: read"). Manual runs don't wait.
+#wait_for_ci = ["linter", "tests"]
+#ci_timeout = "30m"
 lock = true                   # one deploy at a time
 queue = true                  # a push during a deploy runs after it (latest push wins);
                               # false = reject it with 409

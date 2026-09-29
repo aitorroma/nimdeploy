@@ -104,6 +104,8 @@ sudo nimdeploy status -json agency
 sudo nimdeploy run agency              # deploy the branch head
 sudo nimdeploy run -commit 9f1c2e7 agency
 sudo nimdeploy run -f agency           # follow the log; exit code 1 if it fails
+sudo nimdeploy history                 # past deploys, newest first (-n 50, -json)
+sudo nimdeploy history agency
 ```
 
 ```text
@@ -112,7 +114,52 @@ agency    running (+1 queued)  2026-09-29 15:57:53  -         1111111  dev  2026
 frontend  success              2026-09-29 13:10:02  1m12s     c93a11f  ana  20260929-131002-c93a11.log
 ```
 
+`status` shows the last deploy of each service; `history` lists every deploy
+whose log is still kept (`logging.retain`, 30 per deploy by default), rebuilt
+from the logs themselves, so it survives restarts:
+
+```text
+DEPLOY  STATUS   STARTED              DURATION  TRIGGER  COMMIT   BY         LOG                         NOTE
+lotes   skipped  2026-09-30 10:12:03  2m10s     webhook  a41f09c  ana        20260930-101203-7f3a21.log  CI failed: linter=success tests=failure
+lotes   success  2026-09-29 15:54:23  50s       webhook  05e8108  aitorroma  20260929-155423-09c5ee.log
+lotes   success  2026-09-29 15:49:13  50s       manual   -        root       20260929-154913-c49e52.log
+```
+
 Flags go before the deploy name.
+
+## Wait for CI
+
+```toml
+[github]
+token_env = "GITHUB_TOKEN"
+
+[deploy.shop]
+# ...
+wait_for_ci = ["linter", "tests"]   # GitHub Actions workflow names
+ci_timeout = "30m"
+```
+
+A push no longer deploys right away: the deploy shows as `waiting` and
+nimdeploy asks GitHub every 15 s about those workflows for the pushed commit.
+
+- All passed (or were `skipped`/`neutral`): it deploys.
+- One failed, was cancelled or timed out: nothing runs, the deploy ends as
+  `skipped` with the reason (`CI failed: linter=success tests=failure`), the
+  commit gets a failure status and `[notify]` sends a "NOT deployed" message.
+- Not finished within `ci_timeout` (also when a listed workflow never starts,
+  e.g. because of `paths:` filters): `skipped`. List only workflows that run on
+  every push to the branch.
+- Another push arrives while waiting: the waiting one ends as `skipped`
+  (superseded, no status or notification) and the newest push waits for its
+  own CI, so only commits whose CI passed are deployed, and only the latest.
+- `nimdeploy run` (manual) doesn't wait.
+
+The log shows each change: `ci: linter=success tests=in_progress`, then
+`ci: passed after 2m10s, deploying`. The token needs **Actions: read** on the
+repository (plus **Commit statuses: write** for statuses; otherwise set
+`commit_status = false`). Fine-grained tokens only reach repositories owned by
+you or your organizations: for a repository of another personal account,
+its owner creates the token, or use a classic token with `repo` scope.
 
 ## Notifications
 
@@ -252,6 +299,7 @@ journalctl -u nimdeploy -f        # one line per webhook and per finished deploy
 | `POST /deploy/{name}` | manual deploy, optional body `{"commit":"...","user":"..."}`. Token required |
 | `GET /status` | state of every deploy. Token required if `api_token_env` is set |
 | `GET /status/{name}` | state of one deploy. Same |
+| `GET /history/{name}?limit=N` | past deploys from the kept logs, newest first. Same |
 | `GET /healthz` | liveness, always open |
 
 With `api_token_env` set, send `Authorization: Bearer <token>`.
@@ -274,8 +322,9 @@ With `api_token_env` set, send `Authorization: Bearer <token>`.
 }
 ```
 
-`status` is one of `never`, `running`, `success`, `failed`, or `interrupted`
-(the service stopped mid-deploy). `queued` appears only while a push waits.
+`status` is one of `never`, `waiting` (for CI), `running`, `success`,
+`failed`, `skipped` (CI failed or superseded) or `interrupted` (the service
+stopped mid-deploy). `queued` appears only while a push waits.
 A queued push is lost if the service stops before it runs; it is logged.
 
 ## Reverse proxy

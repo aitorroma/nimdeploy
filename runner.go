@@ -25,6 +25,8 @@ const (
 	StatusSuccess     = "success"
 	StatusFailed      = "failed"
 	StatusInterrupted = "interrupted"
+	StatusWaiting     = "waiting" // waiting for CI
+	StatusSkipped     = "skipped" // not deployed: CI failed or a newer push replaced it
 
 	TriggerWebhook = "webhook"
 	TriggerManual  = "manual"
@@ -173,7 +175,7 @@ func (r *Runner) loadState(name string) {
 		log.Printf("deploy=%s cannot parse state: %v", name, err)
 		return
 	}
-	if st.Status == StatusRunning {
+	if st.Status == StatusRunning || st.Status == StatusWaiting {
 		st.Status = StatusInterrupted
 		st.Error = "service stopped while deploy was running"
 	}
@@ -253,7 +255,7 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	startedAt := start.Truncate(time.Second)
 	st := &State{
 		Deploy:     d.Name,
-		Status:     StatusRunning,
+		Status:     initialStatus(d, t),
 		Trigger:    t.Source,
 		StartedAt:  &startedAt,
 		Delivery:   t.Delivery,
@@ -302,8 +304,84 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 	fmt.Fprintln(f)
 
-	notifier.CommitStatus(d, t, "pending", "Deploying")
+	status, errMsg := StatusSuccess, ""
+	var exitCode *int
+	superseded := false
+	cmdStart := start
+	proceed := true
+	if needsCI(d, t) {
+		logf("ci: waiting for %s (timeout %s)", strings.Join(d.WaitForCI, ", "), d.CITimeout)
+		ok, reason, sup := r.waitForCI(d, t, notifier, logf)
+		if ok {
+			logf("ci: passed after %s, deploying", formatDuration(time.Since(start)))
+			fmt.Fprintln(f)
+			r.setStatus(d.Name, st, StatusRunning)
+			cmdStart = time.Now()
+		} else {
+			logf("ci: not deploying: %s", reason)
+			proceed, status, errMsg, superseded = false, StatusSkipped, reason, sup
+		}
+	}
+	if proceed {
+		notifier.CommitStatus(d, t, "pending", "Deploying")
+		status, exitCode, errMsg = r.execute(d, env, f)
+	}
 
+	finished := time.Now()
+	duration := formatDuration(finished.Sub(cmdStart))
+
+	fmt.Fprintln(f)
+	logf("status=%s", status)
+	logf("duration=%s", duration)
+	if exitCode != nil {
+		logf("exit_code=%d", *exitCode)
+	}
+	if errMsg != "" {
+		logf("error=%q", errMsg)
+	}
+	if cerr := f.Close(); cerr != nil {
+		log.Printf("deploy=%s cannot close log: %v", d.Name, cerr)
+	}
+
+	if errMsg != "" {
+		log.Printf("deploy=%s status=%s duration=%s error=%q log=%s", d.Name, status, duration, errMsg, path)
+	} else {
+		log.Printf("deploy=%s status=%s duration=%s log=%s", d.Name, status, duration, path)
+	}
+
+	r.mu.Lock()
+	r.running[d.Name]--
+	delete(r.active, path)
+	finishedAt := finished.Truncate(time.Second)
+	st.Status = status
+	st.FinishedAt = &finishedAt
+	st.Duration = duration
+	st.ExitCode = exitCode
+	st.Error = errMsg
+	recovered := false
+	if status != StatusSkipped {
+		// A skipped deploy changed nothing, so it neither breaks nor fixes.
+		prev := r.lastFinished[d.Name]
+		r.lastFinished[d.Name] = status
+		recovered = status == StatusSuccess && (prev == StatusFailed || prev == StatusInterrupted)
+	}
+	if r.states[d.Name] == st {
+		// With lock = false a newer run may have replaced this one; don't clobber it.
+		r.persist(st)
+	}
+	if err := pruneLogs(filepath.Dir(path), retain, r.active); err != nil {
+		log.Printf("deploy=%s cannot prune logs: %v", d.Name, err)
+	}
+	r.startPendingLocked(d.Name)
+	final := copyState(st)
+	final.Queued = nil
+	r.mu.Unlock()
+
+	notifier.Finished(d, t, final, recovered, path, superseded)
+}
+
+// execute runs the deploy command, writing its output to f.
+func (r *Runner) execute(d *DeployConfig, env []string, f *os.File) (status string, exitCode *int, errMsg string) {
 	ctx, cancel := context.WithTimeout(r.ctx, d.Timeout.Duration)
 	defer cancel()
 
@@ -326,70 +404,34 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 
-	finished := time.Now()
-	duration := formatDuration(finished.Sub(start))
-	status := StatusSuccess
-	exitCode := 0
-	errMsg := ""
-	if err != nil {
-		status = StatusFailed
-		exitCode = -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-		switch {
-		case r.ctx.Err() != nil:
-			errMsg = "canceled: service shutting down"
-		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			errMsg = fmt.Sprintf("timeout after %s", d.Timeout)
-		default:
-			errMsg = err.Error()
-		}
+	code := 0
+	if err == nil {
+		return StatusSuccess, &code, ""
 	}
+	code = -1
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		code = exitErr.ExitCode()
+	}
+	switch {
+	case r.ctx.Err() != nil:
+		errMsg = "canceled: service shutting down"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		errMsg = fmt.Sprintf("timeout after %s", d.Timeout)
+	default:
+		errMsg = err.Error()
+	}
+	return StatusFailed, &code, errMsg
+}
 
-	fmt.Fprintln(f)
-	logf("status=%s", status)
-	logf("duration=%s", duration)
-	logf("exit_code=%d", exitCode)
-	if errMsg != "" {
-		logf("error=%q", errMsg)
-	}
-	if cerr := f.Close(); cerr != nil {
-		log.Printf("deploy=%s cannot close log: %v", d.Name, cerr)
-	}
-
-	if errMsg != "" {
-		log.Printf("deploy=%s status=%s duration=%s exit_code=%d error=%q log=%s", d.Name, status, duration, exitCode, errMsg, path)
-	} else {
-		log.Printf("deploy=%s status=%s duration=%s log=%s", d.Name, status, duration, path)
-	}
-
+// setStatus updates a running deploy's status and persists it.
+func (r *Runner) setStatus(name string, st *State, status string) {
 	r.mu.Lock()
-	r.running[d.Name]--
-	delete(r.active, path)
-	finishedAt := finished.Truncate(time.Second)
+	defer r.mu.Unlock()
 	st.Status = status
-	st.FinishedAt = &finishedAt
-	st.Duration = duration
-	st.ExitCode = &exitCode
-	st.Error = errMsg
-	prev := r.lastFinished[d.Name]
-	r.lastFinished[d.Name] = status
-	recovered := status == StatusSuccess && (prev == StatusFailed || prev == StatusInterrupted)
-	if r.states[d.Name] == st {
-		// With lock = false a newer run may have replaced this one; don't clobber it.
+	if r.states[name] == st {
 		r.persist(st)
 	}
-	if err := pruneLogs(filepath.Dir(path), retain, r.active); err != nil {
-		log.Printf("deploy=%s cannot prune logs: %v", d.Name, err)
-	}
-	r.startPendingLocked(d.Name)
-	final := copyState(st)
-	final.Queued = nil
-	r.mu.Unlock()
-
-	notifier.Finished(d, t, final, recovered, path)
 }
 
 // startPendingLocked runs the queued push, if any. Callers hold r.mu.
@@ -472,6 +514,16 @@ func (r *Runner) Shutdown(grace time.Duration) {
 	}
 	r.cancel()
 }
+
+func initialStatus(d *DeployConfig, t Trigger) string {
+	if needsCI(d, t) {
+		return StatusWaiting
+	}
+	return StatusRunning
+}
+
+// isActive reports whether a status means the deploy hasn't finished.
+func isActive(status string) bool { return status == StatusRunning || status == StatusWaiting }
 
 func copyState(st *State) State {
 	c := *st

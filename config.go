@@ -85,11 +85,16 @@ type NotifyConfig struct {
 }
 
 type GitHubConfig struct {
-	// TokenEnv enables commit statuses; the token needs "Commit statuses: write".
+	// TokenEnv is the GitHub token used for commit statuses ("Commit
+	// statuses: write") and wait_for_ci ("Actions: read").
 	TokenEnv string `toml:"token_env"`
 	APIURL   string `toml:"api_url"`
+	// CommitStatus posts deploy results as commit statuses (default true
+	// when a token is set). Turn off for a read-only token.
+	CommitStatus *bool `toml:"commit_status"`
 
-	token string
+	token        string
+	commitStatus bool
 }
 
 type DeployConfig struct {
@@ -105,7 +110,11 @@ type DeployConfig struct {
 	Args             []string `toml:"args"`
 	Env              []string `toml:"env"`
 
-	Timeout   Duration `toml:"timeout"`
+	Timeout Duration `toml:"timeout"`
+	// WaitForCI lists GitHub Actions workflow names that must succeed for the
+	// pushed commit before a webhook deploy runs.
+	WaitForCI []string `toml:"wait_for_ci"`
+	CITimeout Duration `toml:"ci_timeout"`
 	Lock      *bool    `toml:"lock"`
 	Queue     *bool    `toml:"queue"`
 	LogOutput *bool    `toml:"log_output"`
@@ -122,7 +131,10 @@ var (
 	envKeyRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 )
 
-const defaultDeployTimeout = 30 * time.Minute
+const (
+	defaultDeployTimeout = 30 * time.Minute
+	defaultCITimeout     = 30 * time.Minute
+)
 
 // LoadConfig parses and validates the config file. Secrets are read from the
 // environment separately by ResolveSecrets, so CLI commands work without them.
@@ -181,6 +193,7 @@ func (c *Config) validate() error {
 	if err := c.Notify.validate(); err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}
+	c.GitHub.commitStatus = c.GitHub.CommitStatus == nil || *c.GitHub.CommitStatus
 	if len(c.Deploy) == 0 {
 		return fmt.Errorf("no [deploy.<name>] sections defined")
 	}
@@ -190,6 +203,9 @@ func (c *Config) validate() error {
 		d.Name = name
 		if err := d.validate(); err != nil {
 			return fmt.Errorf("deploy.%s: %w", name, err)
+		}
+		if len(d.WaitForCI) > 0 && c.GitHub.TokenEnv == "" {
+			return fmt.Errorf("deploy.%s: wait_for_ci needs [github] token_env (a token with Actions: read)", name)
 		}
 		if other, dup := paths[d.Path]; dup {
 			return fmt.Errorf("deploy.%s: path %s already used by deploy.%s", name, d.Path, other)
@@ -275,7 +291,7 @@ func (d *DeployConfig) validate() error {
 	if !hookPathRe.MatchString(d.Path) {
 		return fmt.Errorf("path must start with / and contain only letters, digits, / _ . -")
 	}
-	for _, reserved := range []string{"/status", "/deploy", "/healthz"} {
+	for _, reserved := range []string{"/status", "/history", "/deploy", "/healthz"} {
 		if d.Path == reserved || strings.HasPrefix(d.Path, reserved+"/") {
 			return fmt.Errorf("path %s is reserved", d.Path)
 		}
@@ -305,6 +321,17 @@ func (d *DeployConfig) validate() error {
 	}
 	if d.Timeout.Duration < 0 {
 		return fmt.Errorf("timeout must be positive")
+	}
+	if d.CITimeout.Duration == 0 {
+		d.CITimeout.Duration = defaultCITimeout
+	}
+	if d.CITimeout.Duration < 0 {
+		return fmt.Errorf("ci_timeout must be positive")
+	}
+	for _, w := range d.WaitForCI {
+		if strings.TrimSpace(w) == "" {
+			return fmt.Errorf("wait_for_ci has an empty workflow name")
+		}
 	}
 	d.lock = d.Lock == nil || *d.Lock
 	d.queue = d.Queue == nil || *d.Queue

@@ -144,7 +144,7 @@ func (e *env) waitIdle(t *testing.T) State {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if st := e.runner.State("agency"); st.Status != StatusRunning && st.Queued == nil {
+		if st := e.runner.State("agency"); !isActive(st.Status) && st.Queued == nil {
 			return st
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -647,5 +647,252 @@ base_path = "/nd"
 	e.cfg.Server.socketPath = "/run/nimdeploy/nimdeploy.sock"
 	if out := nginxSnippet(e.cfg, false); !strings.Contains(out, "proxy_pass http://unix:/run/nimdeploy/nimdeploy.sock;") || strings.Contains(out, "/status") {
 		t.Errorf("unix snippet:\n%s", out)
+	}
+}
+
+func TestHistory(t *testing.T) {
+	e := newEnv(t, `[ "$DEPLOY_TRIGGER" = manual ] || exit 4`, `
+[server]
+api_token_env = "TEST_API_TOKEN"
+`)
+	e.request("POST", "/deploy/agency", testToken, `{"user":"ana"}`)
+	e.waitIdle(t)
+	time.Sleep(1100 * time.Millisecond) // log names have 1s resolution
+	e.push(t, pushOpts{commit: sha2, delivery: "h2"})
+	e.waitIdle(t)
+	// A log without footer, as left by a crash.
+	os.WriteFile(filepath.Join(e.logDir, "agency", "20200101-000000-dead00.log"),
+		[]byte("2020-01-01T00:00:00Z deploy=agency status=started\n2020-01-01T00:00:00Z trigger=webhook\n\nhalf done\n"), 0o640)
+
+	rec := e.request("GET", "/history/agency", testToken, "")
+	var h []State
+	if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil || len(h) != 3 {
+		t.Fatalf("history: %d %s", rec.Code, rec.Body)
+	}
+	if h[0].Trigger != TriggerWebhook || h[0].Status != StatusFailed || *h[0].ExitCode != 4 || h[0].Commit != sha2 || h[0].Error != "exit status 4" {
+		t.Errorf("newest: %+v", h[0])
+	}
+	if h[1].Trigger != TriggerManual || h[1].Status != StatusSuccess || h[1].Pusher != "ana" || h[1].StartedAt == nil || h[1].FinishedAt == nil {
+		t.Errorf("manual: %+v", h[1])
+	}
+	if h[2].Status != StatusInterrupted || h[2].Log != "20200101-000000-dead00.log" {
+		t.Errorf("crashed: %+v", h[2])
+	}
+	if rec := e.request("GET", "/history/agency?limit=1", testToken, ""); strings.Count(rec.Body.String(), `"log"`) != 1 {
+		t.Errorf("limit: %s", rec.Body)
+	}
+	if rec := e.request("GET", "/history/agency", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("history without token: %d", rec.Code)
+	}
+}
+
+// fakeGitHub serves workflow runs per commit and records commit statuses
+// and notifications.
+type fakeGitHub struct {
+	mu       sync.Mutex
+	runs     map[string]map[string]string // sha -> workflow -> "in_progress" | conclusion
+	statuses []string                     // "sha state description"
+	notes    []string
+}
+
+func (g *fakeGitHub) set(sha, workflow, state string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.runs[sha] == nil {
+		g.runs[sha] = map[string]string{}
+	}
+	g.runs[sha][workflow] = state
+}
+
+func (g *fakeGitHub) serve(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		switch {
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/actions/runs"):
+			var runs []map[string]any
+			for name, state := range g.runs[r.URL.Query().Get("head_sha")] {
+				run := map[string]any{"name": name, "status": "completed", "conclusion": state, "run_attempt": 1, "created_at": "2026-09-29T10:00:00Z"}
+				if state == "in_progress" || state == "queued" {
+					run["status"], run["conclusion"] = state, nil
+				}
+				runs = append(runs, run)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+		case strings.Contains(r.URL.Path, "/statuses/"):
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			sha := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			g.statuses = append(g.statuses, shortSHA(sha)+" "+body["state"]+" "+body["description"])
+			w.WriteHeader(http.StatusCreated)
+		case r.URL.Path == "/notify":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			g.notes = append(g.notes, body["text"])
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newCIEnv(t *testing.T) (*env, *fakeGitHub) {
+	t.Helper()
+	old := ciPollInterval
+	ciPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { ciPollInterval = old })
+	g := &fakeGitHub{runs: map[string]map[string]string{}}
+	srv := g.serve(t)
+	t.Setenv("TEST_NOTIFY_URL", srv.URL+"/notify")
+	e := newEnv(t, `echo "deploying $DEPLOY_COMMIT" >> deployed.txt`, `
+[notify]
+format = "slack"
+url_env = "TEST_NOTIFY_URL"
+
+[github]
+token_env = "TEST_GITHUB_TOKEN"
+api_url = "`+srv.URL+`"
+`)
+	d := e.cfg.Deploy["agency"]
+	d.WaitForCI = []string{"linter", "tests"}
+	d.CITimeout.Duration = 5 * time.Second
+	return e, g
+}
+
+func (e *env) deployed(t *testing.T) string {
+	b, _ := os.ReadFile(filepath.Join(e.dir, "deployed.txt"))
+	return string(b)
+}
+
+func (e *env) waitLog(t *testing.T, want string) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		if b, _ := os.ReadFile(filepath.Join(e.logDir, "agency", "latest.log")); strings.Contains(string(b), want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("log never contained %q", want)
+}
+
+func (e *env) waitStatus(t *testing.T, want string) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		if e.runner.State("agency").Status == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("status never became %s: %+v", want, e.runner.State("agency"))
+}
+
+func TestWaitForCIPasses(t *testing.T) {
+	e, g := newCIEnv(t)
+	g.set(sha1, "linter", "success")
+	g.set(sha1, "tests", "in_progress")
+	e.push(t, pushOpts{commit: sha1, delivery: "c1"})
+	e.waitStatus(t, StatusWaiting)
+	e.waitLog(t, "ci: linter=success tests=in_progress")
+	if e.deployed(t) != "" {
+		t.Fatal("deployed before CI passed")
+	}
+	g.set(sha1, "tests", "success")
+	st := e.waitIdle(t)
+	if st.Status != StatusSuccess || !strings.Contains(e.deployed(t), sha1) {
+		t.Fatalf("state %+v deployed %q", st, e.deployed(t))
+	}
+	out, _ := os.ReadFile(filepath.Join(e.logDir, "agency", st.Log))
+	for _, want := range []string{"ci: waiting for linter, tests", "ci: linter=success tests=in_progress", "ci: passed after"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWaitForCIFailedSkips(t *testing.T) {
+	e, g := newCIEnv(t)
+	g.set(sha2, "linter", "success")
+	g.set(sha2, "tests", "failure")
+	e.push(t, pushOpts{commit: sha2, delivery: "c2"})
+	st := e.waitIdle(t)
+	if st.Status != StatusSkipped || st.ExitCode != nil || !strings.Contains(st.Error, "CI failed: linter=success tests=failure") {
+		t.Fatalf("state %+v", st)
+	}
+	if e.deployed(t) != "" {
+		t.Fatal("deployed although CI failed")
+	}
+	e.runner.Shutdown(5 * time.Second)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.statuses) != 1 || !strings.HasPrefix(g.statuses[0], "2222222 failure Not deployed: CI failed") {
+		t.Errorf("statuses %q", g.statuses)
+	}
+	if len(g.notes) != 1 || !strings.Contains(g.notes[0], "NOT deployed") {
+		t.Errorf("notes %q", g.notes)
+	}
+	// history shows it as skipped too
+	h, _ := e.runner.History("agency", 0)
+	if len(h) != 1 || h[0].Status != StatusSkipped || !strings.Contains(h[0].Error, "tests=failure") {
+		t.Errorf("history %+v", h)
+	}
+}
+
+func TestWaitForCISupersededByNewerPush(t *testing.T) {
+	e, g := newCIEnv(t)
+	g.set(sha1, "linter", "in_progress")
+	g.set(sha1, "tests", "in_progress")
+	g.set(sha2, "linter", "success")
+	g.set(sha2, "tests", "success")
+	e.push(t, pushOpts{commit: sha1, delivery: "s1"})
+	e.waitStatus(t, StatusWaiting)
+	if rec := e.push(t, pushOpts{commit: sha2, delivery: "s2"}); !strings.Contains(rec.Body.String(), `"result": "queued"`) {
+		t.Fatalf("second push: %s", rec.Body)
+	}
+	st := e.waitIdle(t)
+	if st.Status != StatusSuccess || st.Commit != sha2 {
+		t.Fatalf("final %+v", st)
+	}
+	if d := e.deployed(t); strings.Contains(d, sha1) || !strings.Contains(d, sha2) {
+		t.Fatalf("deployed %q", d)
+	}
+	h, _ := e.runner.History("agency", 0)
+	if len(h) != 2 || h[1].Status != StatusSkipped || !strings.Contains(h[1].Error, "superseded") {
+		t.Fatalf("history %+v", h)
+	}
+	e.runner.Shutdown(5 * time.Second)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, s := range g.statuses {
+		if strings.HasPrefix(s, "1111111") {
+			t.Errorf("superseded commit got a status: %q", s)
+		}
+	}
+	if len(g.notes) != 0 {
+		t.Errorf("notes %q", g.notes)
+	}
+}
+
+func TestWaitForCITimeoutAndManual(t *testing.T) {
+	e, g := newCIEnv(t)
+	e.cfg.Deploy["agency"].CITimeout.Duration = 100 * time.Millisecond
+	e.push(t, pushOpts{commit: sha3, delivery: "t1"}) // no runs at all
+	st := e.waitIdle(t)
+	if st.Status != StatusSkipped || !strings.Contains(st.Error, "CI not finished after 100ms: linter=not_started tests=not_started") {
+		t.Fatalf("timeout state %+v", st)
+	}
+	_ = g
+	// Manual runs don't wait for CI.
+	if _, err := e.runner.Submit("agency", Trigger{Source: TriggerManual, Repository: "acme/agency", Branch: "main", Commit: sha3}); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.waitIdle(t); st.Status != StatusSuccess || !strings.Contains(e.deployed(t), sha3) {
+		t.Fatalf("manual %+v", st)
+	}
+}
+
+func TestWaitForCIRequiresToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.toml")
+	os.WriteFile(path, []byte("[deploy.a]\npath = \"/a\"\nrepository = \"a/b\"\nsecret_env = \"X\"\ncommand = \"true\"\nwait_for_ci = [\"tests\"]\n"), 0o600)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "token_env") {
+		t.Fatalf("err %v", err)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,7 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.HandleFunc("GET /status", s.requireToken(false, s.handleStatusAll))
 	mux.HandleFunc("GET /status/{name}", s.requireToken(false, s.handleStatus))
+	mux.HandleFunc("GET /history/{name}", s.requireToken(false, s.handleHistory))
 	mux.HandleFunc("POST /deploy/{name}", s.requireToken(true, s.handleManualDeploy))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -320,6 +322,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.runner.State(name))
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, ok := s.cfg.Deploy[name]; !ok {
+		writeError(w, http.StatusNotFound, "unknown deploy")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	history, err := s.runner.History(name, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, history)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
