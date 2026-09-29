@@ -337,6 +337,47 @@ location /nimdeploy/ {
 
 The GitHub payload URL is then `https://example.com/nimdeploy/hooks/agency`.
 
+`nimdeploy nginx` prints these blocks from your config (one exact `location`
+per hook path, with the right upstream, socket, prefix and body size), so you
+don't have to keep them in sync by hand:
+
+```bash
+sudo nimdeploy nginx > /etc/nginx/snippets/nimdeploy.conf   # include it in a server {}
+sudo nimdeploy nginx -api                                   # also /status and /deploy
+```
+
+Exact (`=`) and `^~` locations win over the regex locations sites usually have
+(`\.php$`, static files), so hooks are never handled by PHP.
+
+### HestiaCP
+
+The installer publishes the hooks on an existing HestiaCP web domain without
+touching its templates:
+
+```bash
+sudo ./install.sh hestia deploy.example.com            # owner found automatically
+sudo ./install.sh hestia deploy.example.com admin --api
+sudo ./install.sh hestia-remove deploy.example.com
+```
+
+It writes the output of `nimdeploy nginx` to
+`/home/<user>/conf/web/<domain>/nginx.conf_nimdeploy` and `nginx.ssl.conf_nimdeploy`,
+which HestiaCP's templates include inside the domain's `server` block and keeps
+when it rebuilds the domain. Then it runs `nginx -t` (reverting on error),
+reloads nginx, prints the GitHub payload URLs and sends a test POST that must
+get `401` from nimdeploy. It warns if the domain has no SSL or uses a custom
+template without the `nginx.conf_*` include. `install.sh uninstall` removes the
+files from every domain.
+
+Works with nginx alone or nginx in front of Apache. The domain can be a site
+that already exists (only the exact hook paths are taken) or a dedicated one
+like `deploy.example.com`.
+
+Run nimdeploy as the HestiaCP user that owns the sites you deploy
+(`sudo SERVICE_USER=admin ./install.sh`); their code lives in
+`/home/<user>/web/<domain>/`, which is the `working_directory` to use. Run
+`./install.sh hestia` again after adding or renaming hook paths.
+
 ### Caddy
 
 ```caddy

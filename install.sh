@@ -5,9 +5,14 @@
 #   sudo ./install.sh uninstall       # remove binary and unit, keep config and logs
 #   sudo ./install.sh uninstall --purge   # also remove /etc/nimdeploy and the logs
 #
+# HestiaCP: publish the webhook paths on one of its web domains
+#   sudo ./install.sh hestia deploy.example.com [hestia-user] [--api]
+#   sudo ./install.sh hestia-remove deploy.example.com [hestia-user]
+#
 # Environment:
 #   SERVICE_USER=deploy   user the deploys run as (created if missing)
 #   DESTDIR=/some/root    stage files under a root dir (skips useradd/systemctl)
+#   HESTIA=/usr/local/hestia  HestiaCP installation
 set -euo pipefail
 
 SERVICE_USER="${SERVICE_USER:-deploy}"
@@ -19,6 +24,10 @@ UNIT="$DESTDIR/etc/systemd/system/nimdeploy.service"
 LOGS="$DESTDIR/var/log/nimdeploy"
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
+
+HESTIA="${HESTIA:-/usr/local/hestia}"
+HESTIA_HOME="$DESTDIR${HESTIA_HOME:-/home}"
+SNIPPETS=(nginx.conf_nimdeploy nginx.ssl.conf_nimdeploy)
 
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*" >&2; }
@@ -111,6 +120,10 @@ do_install() {
 		"$SRC/deploy/nimdeploy.service" >"$UNIT"
 	chmod 0644 "$UNIT"
 
+	if [[ -x "$HESTIA/bin/v-list-web-domain" ]]; then
+		log "HestiaCP detected: publish the hooks on a domain with: sudo $0 hestia <domain>"
+	fi
+
 	live || { log "staged under $DESTDIR"; return; }
 
 	systemctl daemon-reload
@@ -147,6 +160,137 @@ EOF
 	fi
 }
 
+# --- HestiaCP ----------------------------------------------------------------
+# HestiaCP's nginx templates include /home/USER/conf/web/DOMAIN/nginx.conf_*
+# (http) and nginx.ssl.conf_* (https) inside the domain's server block, and
+# keeps those files when it rebuilds the domain. The hook locations go there,
+# so no template has to be changed.
+
+hestia_owner() {
+	local domain=$1 user=$2
+	if [[ -z "$user" ]]; then
+		user="$("$HESTIA/bin/v-search-domain-owner" "$domain" web 2>/dev/null || true)"
+	fi
+	[[ -n "$user" ]] || die "web domain $domain not found in HestiaCP; add it first: v-add-web-domain <user> $domain"
+	"$HESTIA/bin/v-list-web-domain" "$user" "$domain" >/dev/null 2>&1 ||
+		die "web domain $domain does not belong to HestiaCP user $user"
+	printf '%s' "$user"
+}
+
+nginx_reload() {
+	live || return 0
+	nginx -t 2>&1 || return 1
+	systemctl reload nginx
+}
+
+do_hestia() {
+	require_root hestia
+	local domain="" user="" api=0 arg
+	for arg in "$@"; do
+		case "$arg" in
+		--api) api=1 ;;
+		-*) die "unknown option $arg" ;;
+		*) if [[ -z "$domain" ]]; then domain=$arg; else user=$arg; fi ;;
+		esac
+	done
+	[[ -n "$domain" ]] || die "usage: $0 hestia <domain> [hestia-user] [--api]"
+	[[ -x "$HESTIA/bin/v-list-web-domain" ]] || die "HestiaCP not found in $HESTIA"
+	[[ -x "$BIN" ]] || die "install nimdeploy first: sudo $0"
+	if live; then
+		command -v nginx >/dev/null || die "nginx not found: HestiaCP must run nginx (alone or as proxy in front of Apache)"
+	fi
+	user="$(hestia_owner "$domain" "$user")"
+
+	local dir="$HESTIA_HOME/$user/conf/web/$domain"
+	[[ -d "$dir" ]] || die "$dir not found"
+
+	local flags=() snippet
+	((api)) && flags+=(-api)
+	snippet="$("$BIN" -config "$ETC/config.toml" nginx "${flags[@]}")" ||
+		die "cannot generate the nginx config from $ETC/config.toml"
+
+	if ! grep -qs 'conf_\*' "$dir/nginx.conf" "$dir/nginx.ssl.conf"; then
+		warn "$domain's nginx config does not include nginx.conf_* files (custom template?); the hooks may not be reachable"
+	fi
+	if ! "$HESTIA/bin/v-list-web-domain" "$user" "$domain" json 2>/dev/null | grep -q '"SSL": *"yes"'; then
+		warn "$domain has no SSL: enable it (v-add-letsencrypt-domain $user $domain) and use https in GitHub"
+	fi
+
+	local name backup
+	backup="$(mktemp -d)"
+	for name in "${SNIPPETS[@]}"; do
+		[[ -e "$dir/$name" ]] && cp -p "$dir/$name" "$backup/"
+		printf '%s\n' "$snippet" >"$dir/$name"
+		chmod 0644 "$dir/$name"
+	done
+	if ! nginx_reload; then
+		for name in "${SNIPPETS[@]}"; do
+			if [[ -e "$backup/$name" ]]; then cp -p "$backup/$name" "$dir/$name"; else rm -f "$dir/$name"; fi
+		done
+		rm -rf "$backup"
+		die "nginx -t failed; changes reverted"
+	fi
+	rm -rf "$backup"
+	log "published on $domain ($dir/${SNIPPETS[0]}, ${SNIPPETS[1]})"
+
+	local paths path
+	paths="$(sed -n 's/^location = \([^ ]*\) {$/\1/p' <<<"$snippet" | grep -v '/status$' || true)"
+	echo
+	echo "GitHub payload URLs:"
+	for path in $paths; do
+		echo "  https://$domain$path"
+	done
+
+	if live && [[ -n "$paths" ]]; then
+		path="$(head -1 <<<"$paths")"
+		local code
+		code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST --resolve "$domain:443:127.0.0.1" "https://$domain$path" || true)"
+		case "$code" in
+		401) log "check: POST https://$domain$path reaches nimdeploy (401 without signature, as expected)" ;;
+		502) warn "check: nginx answers 502; is nimdeploy running? systemctl status nimdeploy" ;;
+		*) warn "check: POST https://$domain$path answered $code instead of 401; see nginx and nimdeploy logs" ;;
+		esac
+	fi
+
+	local service_user
+	service_user="$(sed -n 's/^User=//p' "$UNIT" 2>/dev/null || true)"
+	if [[ -n "$service_user" && "$service_user" != "$user" ]]; then
+		echo
+		warn "nimdeploy runs as $service_user, but $domain belongs to $user."
+		warn "To deploy $user's sites (owned by $user): sudo SERVICE_USER=$user $0"
+	fi
+	echo
+	echo "Sites of $user live in $HESTIA_HOME/$user/web/<domain>/: use that path as working_directory."
+}
+
+do_hestia_remove() {
+	require_root hestia-remove
+	local domain=${1:-} user=${2:-}
+	[[ -n "$domain" ]] || die "usage: $0 hestia-remove <domain> [hestia-user]"
+	[[ -x "$HESTIA/bin/v-list-web-domain" ]] || die "HestiaCP not found in $HESTIA"
+	user="$(hestia_owner "$domain" "$user")"
+	local dir="$HESTIA_HOME/$user/conf/web/$domain" name
+	for name in "${SNIPPETS[@]}"; do
+		rm -f "$dir/$name"
+	done
+	nginx_reload || die "nginx -t failed after removing the nimdeploy config; check nginx"
+	log "removed nimdeploy from $domain"
+}
+
+# remove_hestia_snippets drops the nginx config from every HestiaCP domain.
+remove_hestia_snippets() {
+	local found=0 f
+	for f in "$HESTIA_HOME"/*/conf/web/*/nginx.conf_nimdeploy "$HESTIA_HOME"/*/conf/web/*/nginx.ssl.conf_nimdeploy; do
+		[[ -e "$f" ]] || continue
+		rm -f "$f"
+		found=1
+		log "removed $f"
+	done
+	if ((found)); then
+		nginx_reload || warn "nginx -t failed after removing the hooks; check nginx"
+	fi
+}
+
 do_uninstall() {
 	require_root uninstall
 	local purge=0
@@ -158,6 +302,7 @@ do_uninstall() {
 	fi
 	rm -f "$UNIT" "$BIN"
 	systemctl_ daemon-reload
+	remove_hestia_snippets
 
 	if ((purge)); then
 		log "removing $ETC and $LOGS"
@@ -171,5 +316,7 @@ do_uninstall() {
 case "${1:-install}" in
 install) do_install ;;
 uninstall) shift; do_uninstall "$@" ;;
-*) die "usage: $0 [install|uninstall [--purge]]" ;;
+hestia) shift; do_hestia "$@" ;;
+hestia-remove) shift; do_hestia_remove "$@" ;;
+*) die "usage: $0 [install | uninstall [--purge] | hestia <domain> [user] [--api] | hestia-remove <domain> [user]]" ;;
 esac

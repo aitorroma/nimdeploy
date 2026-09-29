@@ -631,3 +631,21 @@ api_token_env = "TEST_API_TOKEN"
 		t.Fatalf("status over socket: %v %+v", err, st)
 	}
 }
+
+func TestNginxSnippet(t *testing.T) {
+	e := newEnv(t, `true`, `
+[server]
+listen = "0.0.0.0:9100"
+base_path = "/nd"
+`)
+	out := nginxSnippet(e.cfg, true)
+	for _, want := range []string{"location = /nd/hooks/agency {", "proxy_pass http://127.0.0.1:9100;", "client_max_body_size 25m;", "location ^~ /nd/deploy/ {"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	e.cfg.Server.socketPath = "/run/nimdeploy/nimdeploy.sock"
+	if out := nginxSnippet(e.cfg, false); !strings.Contains(out, "proxy_pass http://unix:/run/nimdeploy/nimdeploy.sock;") || strings.Contains(out, "/status") {
+		t.Errorf("unix snippet:\n%s", out)
+	}
+}

@@ -24,6 +24,7 @@ const usage = `Usage:
                                         start a deploy through the running server
   nimdeploy [flags] status [-json] [deploy]
                                         show deploy status
+  nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
 
 Flags:
 `
@@ -70,6 +71,8 @@ func main() {
 		os.Exit(cliRun(cfg, *envFile, args))
 	case "status":
 		os.Exit(cliStatus(cfg, *envFile, args))
+	case "nginx":
+		os.Exit(cliNginx(cfg, args))
 	default:
 		flag.Usage()
 		os.Exit(2)
