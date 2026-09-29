@@ -224,14 +224,177 @@ With `api_token_env` set, send `Authorization: Bearer <token>`.
 (the service stopped mid-deploy). `queued` appears only while a push waits.
 A queued push is lost if the service stops before it runs; it is logged.
 
-Keep `listen` on localhost and have the reverse proxy forward only the hook
-paths:
+## Reverse proxy
+
+nimdeploy speaks plain HTTP and is meant to sit behind nginx, Caddy, Traefik
+or similar, which handles TLS. Keep `listen` local (`127.0.0.1:9000` or a unix
+socket) and publish only what you need:
+
+| path | publish? |
+|---|---|
+| `/hooks/...` | yes, GitHub has to reach it. Protected by the HMAC signature |
+| `/status`, `/deploy/...` | only with `api_token_env` set, if you want them outside the server |
+| `/healthz` | for the proxy's health checks, if any |
+
+Things the proxy has to get right:
+
+- **Body size:** GitHub payloads go up to 25 MB; nginx rejects anything over
+  1 MB by default (`client_max_body_size`).
+- **Client IP:** send `X-Forwarded-For` (or `X-Real-IP`). nimdeploy believes it
+  only from `trusted_proxies` (default: loopback) or the unix socket, and walks
+  it right to left, so spoofed entries added by the client are ignored. The IP
+  shows up in the access log: `http POST /hooks/agency status=202 client=140.82.115.3 ...`.
+- **Prefix:** if the proxy strips `/nimdeploy` nothing is needed; if it forwards
+  `/nimdeploy/hooks/agency` as is, set `base_path = "/nimdeploy"`.
+- **Timeouts:** none needed; webhooks are answered right away (`202`) and the
+  deploy runs in the background.
+
+### nginx
 
 ```nginx
-location /hooks/ {
-    proxy_pass http://127.0.0.1:9000;
+server {
+    listen 443 ssl;
+    server_name deploy.example.com;
+    # ssl_certificate ...
+
+    location /hooks/ {
+        proxy_pass http://127.0.0.1:9000;   # or http://unix:/run/nimdeploy/nimdeploy.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        client_max_body_size 25m;
+    }
+
+    # Optional, only with api_token_env:
+    # location = /status { proxy_pass http://127.0.0.1:9000; }
 }
 ```
+
+Under a subpath of an existing site, stripping the prefix (note the trailing
+`/` in both lines):
+
+```nginx
+location /nimdeploy/ {
+    proxy_pass http://127.0.0.1:9000/;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    client_max_body_size 25m;
+}
+```
+
+The GitHub payload URL is then `https://example.com/nimdeploy/hooks/agency`.
+
+### Caddy
+
+```caddy
+deploy.example.com {
+    handle /hooks/* {
+        request_body {
+            max_size 25MB
+        }
+        reverse_proxy 127.0.0.1:9000   # or unix//run/nimdeploy/nimdeploy.sock
+    }
+    respond 404
+}
+```
+
+Caddy sets `X-Forwarded-For` and gets certificates by itself.
+
+### Traefik
+
+With nimdeploy on the host and Traefik in Docker, the requests come from the
+Docker network, so trust it and listen where the container can reach you:
+
+```toml
+[server]
+listen = "172.17.0.1:9000"                 # docker0 bridge
+trusted_proxies = ["172.16.0.0/12"]
+```
+
+```yaml
+# dynamic configuration (file provider)
+http:
+  routers:
+    nimdeploy:
+      rule: "Host(`deploy.example.com`) && PathPrefix(`/hooks/`)"
+      service: nimdeploy
+      tls:
+        certResolver: letsencrypt
+  services:
+    nimdeploy:
+      loadBalancer:
+        servers:
+          - url: "http://172.17.0.1:9000"
+```
+
+### Cloudflare
+
+**Cloudflare Tunnel** (recommended: no open ports on the server). `cloudflared`
+connects from localhost, which is trusted by default:
+
+```yaml
+# /etc/cloudflared/config.yml
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: deploy.example.com
+    path: ^/hooks/
+    service: http://127.0.0.1:9000        # or unix:/run/nimdeploy/nimdeploy.sock
+  - service: http_status:404
+```
+
+```toml
+[server]
+client_ip_header = "CF-Connecting-IP"
+```
+
+**Proxied DNS** (orange cloud) → nginx/Caddy → nimdeploy. The proxy appends
+Cloudflare's edge IP to `X-Forwarded-For`, so trust Cloudflare's ranges too:
+
+```toml
+[server]
+trusted_proxies = ["127.0.0.0/8", "::1", "cloudflare"]
+client_ip_header = "CF-Connecting-IP"
+```
+
+Use SSL mode *Full (strict)*, and let the origin accept only Cloudflare's IPs
+(or use Authenticated Origin Pulls); otherwise anyone reaching the origin
+directly can fake `CF-Connecting-IP`. That only affects the logged IP: the
+webhook signature is checked either way.
+
+Cloudflare settings that break GitHub deliveries (look for `403` or an HTML
+challenge in GitHub → Settings → Webhooks → Recent Deliveries):
+
+- **WAF, Super Bot Fight Mode, "I'm Under Attack", rate limiting:** GitHub
+  can't solve challenges. Add a WAF custom rule with the expression
+  `starts_with(http.request.uri.path, "/hooks/")` and action *Skip*, selecting
+  the features to skip.
+- **Bot Fight Mode** (free plan) cannot be skipped per path: if it blocks the
+  deliveries, turn it off for the zone or serve the hooks from another zone.
+- **Cloudflare Access:** add a self-hosted application for
+  `deploy.example.com/hooks/` with a *Bypass* policy for *Everyone*, or GitHub
+  gets the login page.
+
+Payloads are well below Cloudflare's 100 MB request limit, and POST requests
+are never cached.
+
+Cloudflare's IP list is built into the binary. If it changes
+(https://www.cloudflare.com/ips/), you can list the new ranges explicitly in
+`trusted_proxies` until the next release.
+
+### Unix socket
+
+```toml
+[server]
+listen = "unix:/run/nimdeploy/nimdeploy.sock"
+```
+
+The systemd unit creates `/run/nimdeploy/`. The socket is `0666` by default,
+the same exposure as a TCP port on localhost; use `socket_mode = "0660"` and
+`usermod -aG deploy www-data` to limit it to the proxy's user. The CLI uses the
+socket automatically.
+
+If `listen` is not local and no API token is configured, nimdeploy warns at
+startup that `/status` is open.
 
 ## GitHub setup
 

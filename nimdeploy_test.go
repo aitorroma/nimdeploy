@@ -507,3 +507,127 @@ func TestReadEnvFile(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestClientIP(t *testing.T) {
+	cfg := &Config{Server: ServerConfig{Listen: "127.0.0.1:9000", SocketMode: "0666", TrustedProxies: []string{"127.0.0.0/8", "::1", "10.0.0.0/8"}}}
+	if err := cfg.Server.validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: cfg}
+	cases := []struct {
+		name, remote, xff, realIP, want string
+	}{
+		{"direct client ignores headers", "203.0.113.9:5000", "1.2.3.4", "5.6.7.8", "203.0.113.9"},
+		{"proxy with XFF", "127.0.0.1:5000", "140.82.115.3", "", "140.82.115.3"},
+		{"spoofed XFF entry is skipped", "127.0.0.1:5000", "6.6.6.6, 140.82.115.3", "", "140.82.115.3"},
+		{"proxy chain", "127.0.0.1:5000", "140.82.115.3, 10.0.0.5", "", "140.82.115.3"},
+		{"X-Real-IP fallback", "[::1]:5000", "", "140.82.115.3", "140.82.115.3"},
+		{"proxy without headers", "127.0.0.1:5000", "", "", "127.0.0.1"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if c.realIP != "" {
+			r.Header.Set("X-Real-IP", c.realIP)
+		}
+		if got := s.clientIP(r); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+func TestClientIPCloudflare(t *testing.T) {
+	// Cloudflare -> nginx -> nimdeploy: nginx appends the Cloudflare edge IP.
+	cfg := &Config{Server: ServerConfig{Listen: "127.0.0.1:9000", SocketMode: "0666", TrustedProxies: []string{"127.0.0.1", "cloudflare"}}}
+	if err := cfg.Server.validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: cfg}
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:5000"
+	r.Header.Set("X-Forwarded-For", "6.6.6.6, 140.82.115.3, 172.70.1.2")
+	if got := s.clientIP(r); got != "140.82.115.3" {
+		t.Errorf("XFF through cloudflare: got %s", got)
+	}
+
+	// With client_ip_header the header wins, but only from a trusted peer.
+	cfg.Server.ClientIPHeader = "CF-Connecting-IP"
+	r.Header.Set("CF-Connecting-IP", "2001:db8::7")
+	if got := s.clientIP(r); got != "2001:db8::7" {
+		t.Errorf("CF-Connecting-IP: got %s", got)
+	}
+	r.RemoteAddr = "203.0.113.9:5000"
+	if got := s.clientIP(r); got != "203.0.113.9" {
+		t.Errorf("header from untrusted peer must be ignored: got %s", got)
+	}
+}
+
+func TestBasePath(t *testing.T) {
+	e := newEnv(t, `true`, `
+[server]
+base_path = "/nimdeploy/"
+`)
+	if rec := e.request("GET", "/nimdeploy/status/agency", "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("prefixed status: %d", rec.Code)
+	}
+	if rec := e.request("GET", "/status/agency", "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unprefixed status should 404: %d", rec.Code)
+	}
+	body := `{"ref":"refs/heads/main","after":"` + sha1 + `","repository":{"full_name":"acme/agency"}}`
+	req := httptest.NewRequest("POST", "/nimdeploy/hooks/agency", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", sign([]byte(body)))
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("prefixed webhook: %d %s", rec.Code, rec.Body)
+	}
+	e.waitIdle(t)
+}
+
+func TestUnixSocket(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "nimdeploy.sock")
+	e := newEnv(t, `true`, `
+[server]
+listen = "unix:`+sock+`"
+socket_mode = "0660"
+base_path = "/nd"
+api_token_env = "TEST_API_TOKEN"
+`)
+	// A stale socket from a crash must not prevent startup.
+	stale, err := listen(e.cfg.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.(interface{ SetUnlinkOnClose(bool) }).SetUnlinkOnClose(false)
+	stale.Close()
+
+	ln, err := listen(e.cfg.Server)
+	if err != nil {
+		t.Fatalf("listen over stale socket: %v", err)
+	}
+	srv := &http.Server{Handler: e.h}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	info, _ := os.Stat(sock)
+	if info.Mode().Perm() != 0o660 {
+		t.Errorf("socket mode %o", info.Mode().Perm())
+	}
+	c, err := newClient(e.cfg, "/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res SubmitResult
+	if _, err := c.do("POST", "/deploy/agency", manualRequest{User: "cli"}, &res); err != nil || res.Result != ResultStarted {
+		t.Fatalf("deploy over socket: %v %+v", err, res)
+	}
+	e.waitIdle(t)
+	var st State
+	if _, err := c.do("GET", "/status/agency", nil, &st); err != nil || st.Status != StatusSuccess || st.Pusher != "cli" {
+		t.Fatalf("status over socket: %v %+v", err, st)
+	}
+}

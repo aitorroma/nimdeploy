@@ -9,9 +9,12 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type Server struct {
@@ -35,7 +38,93 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	return mux
+
+	var h http.Handler = mux
+	if base := s.cfg.Server.BasePath; base != "" {
+		h = http.StripPrefix(base, mux)
+	}
+	return s.accessLog(h)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// accessLog logs every request except health checks, with the real client IP.
+func (s *Server) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		if strings.HasSuffix(r.URL.Path, "/healthz") && rec.status == http.StatusOK {
+			return
+		}
+		log.Printf("http %s %s status=%d client=%s delivery=%s duration=%s",
+			r.Method, r.URL.Path, rec.status, s.clientIP(r), r.Header.Get("X-GitHub-Delivery"), formatDuration(time.Since(start)))
+	})
+}
+
+// clientIP returns the address of whoever sent the request. Forwarding
+// headers are only believed when the direct peer is a trusted proxy (or the
+// unix socket); X-Forwarded-For is walked right to left, skipping proxies.
+func (s *Server) clientIP(r *http.Request) string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	if s.cfg.Server.socketPath == "" && !s.trustedProxy(peer) {
+		return peer
+	}
+	if name := s.cfg.Server.ClientIPHeader; name != "" {
+		if ip := strings.TrimSpace(r.Header.Get(name)); ip != "" {
+			if _, err := netip.ParseAddr(ip); err == nil {
+				return ip
+			}
+		}
+	}
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		for _, hop := range strings.Split(v, ",") {
+			if hop = strings.TrimSpace(hop); hop != "" {
+				hops = append(hops, hop)
+			}
+		}
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		if !s.trustedProxy(hops[i]) {
+			return hops[i]
+		}
+	}
+	if len(hops) > 0 {
+		return hops[0]
+	}
+	if real := strings.TrimSpace(r.Header.Get("X-Real-IP")); real != "" {
+		return real
+	}
+	if peer == "" || peer == "@" {
+		return "unix"
+	}
+	return peer
+}
+
+func (s *Server) trustedProxy(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range s.cfg.Server.trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // requireToken checks "Authorization: Bearer <api token>". Without a
@@ -84,7 +173,7 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			return
 		}
 		if !validSignature(d.secret, body, r.Header.Get("X-Hub-Signature-256")) {
-			log.Printf("deploy=%s delivery=%s rejected: invalid signature from %s", d.Name, delivery, r.RemoteAddr)
+			log.Printf("deploy=%s delivery=%s rejected: invalid signature from %s", d.Name, delivery, s.clientIP(r))
 			writeError(w, http.StatusUnauthorized, "invalid signature")
 			return
 		}

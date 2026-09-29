@@ -1,5 +1,15 @@
 [server]
+# Behind a reverse proxy keep it local: "127.0.0.1:9000" or a unix socket.
 listen = "127.0.0.1:9000"
+#listen = "unix:/run/nimdeploy/nimdeploy.sock"
+#socket_mode = "0666"         # who can connect to the socket
+# Only if the proxy forwards /nimdeploy/... without stripping the prefix:
+#base_path = "/nimdeploy"
+# Proxies whose X-Forwarded-For / X-Real-IP are believed (unix socket: always).
+#trusted_proxies = ["127.0.0.0/8", "::1"]
+# Behind Cloudflare (see README, Cloudflare):
+#trusted_proxies = ["127.0.0.0/8", "::1", "cloudflare"]
+#client_ip_header = "CF-Connecting-IP"
 # max_body_bytes = 26214400   # 25 MB, the GitHub maximum
 # shutdown_timeout = "5m"     # wait this long for running deploys on stop
 # Bearer token for /status and /deploy (manual deploys, `nimdeploy run`).

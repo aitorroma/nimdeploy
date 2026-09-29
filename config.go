@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,14 +38,30 @@ type Config struct {
 }
 
 type ServerConfig struct {
+	// Listen is "host:port" or "unix:/path/to.sock".
 	Listen          string   `toml:"listen"`
 	MaxBodyBytes    int64    `toml:"max_body_bytes"`
 	ShutdownTimeout Duration `toml:"shutdown_timeout"`
 	// APITokenEnv names the env var holding the bearer token for /status and
 	// /deploy. Without it /status is open and manual deploys are disabled.
 	APITokenEnv string `toml:"api_token_env"`
+	// BasePath is a prefix every route lives under, for reverse proxies that
+	// forward "/nimdeploy/hooks/x" without stripping "/nimdeploy".
+	BasePath string `toml:"base_path"`
+	// TrustedProxies are the addresses/CIDRs whose X-Forwarded-For and
+	// X-Real-IP headers are believed. Unix socket peers are always trusted.
+	// "cloudflare" expands to Cloudflare's edge ranges.
+	TrustedProxies []string `toml:"trusted_proxies"`
+	// ClientIPHeader, e.g. "CF-Connecting-IP", takes precedence over
+	// X-Forwarded-For when the request comes from a trusted proxy.
+	ClientIPHeader string `toml:"client_ip_header"`
+	// SocketMode is the permission of the unix socket.
+	SocketMode string `toml:"socket_mode"`
 
-	apiToken string
+	apiToken   string
+	socketPath string
+	socketMode os.FileMode
+	trusted    []netip.Prefix
 }
 
 type LoggingConfig struct {
@@ -113,6 +132,8 @@ func LoadConfig(path string) (*Config, error) {
 			Listen:          "127.0.0.1:9000",
 			MaxBodyBytes:    25 << 20, // GitHub caps webhook payloads at 25 MB
 			ShutdownTimeout: Duration{5 * time.Minute},
+			TrustedProxies:  []string{"127.0.0.0/8", "::1"},
+			SocketMode:      "0666",
 		},
 		Logging: LoggingConfig{
 			Directory: "/var/log/nimdeploy",
@@ -145,8 +166,8 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.Server.Listen == "" {
-		return fmt.Errorf("server.listen is required")
+	if err := c.Server.validate(); err != nil {
+		return fmt.Errorf("server: %w", err)
 	}
 	if c.Server.MaxBodyBytes <= 0 {
 		return fmt.Errorf("server.max_body_bytes must be positive")
@@ -174,6 +195,50 @@ func (c *Config) validate() error {
 			return fmt.Errorf("deploy.%s: path %s already used by deploy.%s", name, d.Path, other)
 		}
 		paths[d.Path] = name
+	}
+	return nil
+}
+
+func (s *ServerConfig) validate() error {
+	if path, ok := strings.CutPrefix(s.Listen, "unix:"); ok {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("listen: unix socket path must be absolute")
+		}
+		s.socketPath = path
+	} else if _, _, err := net.SplitHostPort(s.Listen); err != nil {
+		return fmt.Errorf("listen must be host:port or unix:/path: %w", err)
+	}
+
+	mode, err := strconv.ParseUint(s.SocketMode, 8, 32)
+	if err != nil || mode > 0o777 {
+		return fmt.Errorf("socket_mode must be an octal permission like \"0660\"")
+	}
+	s.socketMode = os.FileMode(mode)
+
+	s.BasePath = strings.TrimRight(s.BasePath, "/")
+	if s.BasePath != "" && !hookPathRe.MatchString(s.BasePath) {
+		return fmt.Errorf("base_path must start with / and contain only letters, digits, / _ . -")
+	}
+
+	s.trusted = nil
+	var proxies []string
+	for _, p := range s.TrustedProxies {
+		if strings.EqualFold(p, "cloudflare") {
+			proxies = append(proxies, cloudflareRanges...)
+		} else {
+			proxies = append(proxies, p)
+		}
+	}
+	for _, p := range proxies {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			addr, aerr := netip.ParseAddr(p)
+			if aerr != nil {
+				return fmt.Errorf("trusted_proxies: %q is not an IP or CIDR", p)
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		s.trusted = append(s.trusted, prefix.Masked())
 	}
 	return nil
 }

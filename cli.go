@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,14 +27,28 @@ type client struct {
 }
 
 func newClient(cfg *Config, envFile string) (*client, error) {
-	host, port, err := net.SplitHostPort(cfg.Server.Listen)
-	if err != nil {
-		return nil, fmt.Errorf("server.listen: %w", err)
+	c := &client{http: &http.Client{Timeout: 15 * time.Second}}
+	if sock := cfg.Server.socketPath; sock != "" {
+		c.base = "http://nimdeploy"
+		c.http.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", sock)
+			},
+		}
+	} else {
+		host, port, err := net.SplitHostPort(cfg.Server.Listen)
+		if err != nil {
+			return nil, fmt.Errorf("server.listen: %w", err)
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		c.base = "http://" + net.JoinHostPort(host, port)
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	c := &client{base: "http://" + net.JoinHostPort(host, port), http: &http.Client{Timeout: 15 * time.Second}}
+	c.base += cfg.Server.BasePath
+
+	var err error
 
 	if name := cfg.Server.APITokenEnv; name != "" {
 		c.token = os.Getenv(name)

@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"sync/atomic"
@@ -91,8 +93,15 @@ func serve(configPath string, cfg *Config) {
 	handler := &handlerSwap{}
 	handler.Store(NewServer(cfg, runner).Routes())
 
+	ln, err := listen(cfg.Server)
+	if err != nil {
+		log.Fatalf("listen %s: %v", cfg.Server.Listen, err)
+	}
+	if cfg.Server.apiToken == "" && !isLocal(cfg.Server) {
+		log.Printf("warning: listening on %s without server.api_token_env: /status is readable by anyone who can reach it", cfg.Server.Listen)
+	}
+
 	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
@@ -104,7 +113,7 @@ func serve(configPath string, cfg *Config) {
 	go func() {
 		logDeploys(cfg)
 		log.Printf("nimdeploy %s listening on %s, logs in %s", version, cfg.Server.Listen, cfg.Logging.Directory)
-		errCh <- srv.ListenAndServe()
+		errCh <- srv.Serve(ln)
 	}()
 
 	sigs := make(chan os.Signal, 1)
@@ -165,4 +174,33 @@ func logDeploys(cfg *Config) {
 		d := cfg.Deploy[name]
 		log.Printf("deploy=%s path=%s repository=%s branch=%s", name, d.Path, d.Repository, d.Branch)
 	}
+}
+
+// listen opens the TCP address or unix socket from server.listen.
+func listen(s ServerConfig) (net.Listener, error) {
+	if s.socketPath == "" {
+		return net.Listen("tcp", s.Listen)
+	}
+	// Remove a socket left behind by a crash, but never a regular file.
+	if info, err := os.Lstat(s.socketPath); err == nil && info.Mode()&os.ModeSocket != 0 {
+		_ = os.Remove(s.socketPath)
+	}
+	ln, err := net.Listen("unix", s.socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(s.socketPath, s.socketMode); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+func isLocal(s ServerConfig) bool {
+	if s.socketPath != "" {
+		return true
+	}
+	host, _, _ := net.SplitHostPort(s.Listen)
+	addr, err := netip.ParseAddr(host)
+	return host == "localhost" || (err == nil && addr.IsLoopback())
 }
