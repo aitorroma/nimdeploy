@@ -1,10 +1,7 @@
 package main
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -152,79 +149,72 @@ func (s *Server) requireToken(mandatory bool, next http.HandlerFunc) http.Handle
 	}
 }
 
-type pushPayload struct {
-	Ref        string `json:"ref"`
-	After      string `json:"after"`
-	Deleted    bool   `json:"deleted"`
-	Repository struct {
-		FullName string `json:"full_name"`
-	} `json:"repository"`
-	Pusher struct {
-		Name string `json:"name"`
-	} `json:"pusher"`
-}
-
 func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
+	p := providers[d.Provider]
 	return func(w http.ResponseWriter, r *http.Request) {
-		delivery := r.Header.Get("X-GitHub-Delivery")
-		event := r.Header.Get("X-GitHub-Event")
-
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
 		if err != nil {
 			writeError(w, http.StatusRequestEntityTooLarge, "cannot read body")
 			return
 		}
-		if !validSignature(d.secret, body, r.Header.Get("X-Hub-Signature-256")) {
-			log.Printf("deploy=%s delivery=%s rejected: invalid signature from %s", d.Name, delivery, s.clientIP(r))
+		if !p.verify(r, body, d.secret) {
+			log.Printf("deploy=%s rejected: invalid %s signature/token from %s", d.Name, d.Provider, s.clientIP(r))
 			writeError(w, http.StatusUnauthorized, "invalid signature")
 			return
 		}
 
-		switch event {
-		case "ping":
-			writeJSON(w, http.StatusOK, map[string]string{"deploy": d.Name, "status": "pong"})
-			return
-		case "push":
-		default:
-			ignore(w, d, delivery, "event "+event+" not handled")
-			return
-		}
-
-		// GitHub can send either application/json or form-encoded "payload=".
-		// Fall back to the raw body so a plain `curl -d '{...}'` also works.
+		// Some hosts can send form-encoded "payload=" instead of JSON. Fall
+		// back to the raw body so a plain `curl -d '{...}'` also works.
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
 			if form, err := url.ParseQuery(string(body)); err == nil && form.Get("payload") != "" {
 				body = []byte(form.Get("payload"))
 			}
 		}
-		var p pushPayload
-		if err := json.Unmarshal(body, &p); err != nil {
+		ev, err := p.parse(r, body)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON payload")
 			return
 		}
 
-		if !strings.EqualFold(p.Repository.FullName, d.Repository) {
-			ignore(w, d, delivery, "repository "+p.Repository.FullName+" does not match")
+		switch {
+		case ev.Ping:
+			writeJSON(w, http.StatusOK, map[string]string{"deploy": d.Name, "status": "pong"})
+			return
+		case !ev.Push:
+			ignore(w, d, ev.Delivery, "event "+ev.Name+" not handled")
 			return
 		}
-		branch, isBranch := strings.CutPrefix(p.Ref, "refs/heads/")
-		if !isBranch || branch != d.Branch {
-			ignore(w, d, delivery, "ref "+p.Ref+" is not branch "+d.Branch)
+		if !strings.EqualFold(ev.Repository, d.Repository) {
+			ignore(w, d, ev.Delivery, "repository "+ev.Repository+" does not match")
 			return
 		}
-		if p.Deleted {
-			ignore(w, d, delivery, "branch deleted")
+
+		var match *pushInfo
+		var refs []string
+		for i, push := range ev.Pushes {
+			refs = append(refs, push.Ref)
+			if branch, ok := strings.CutPrefix(push.Ref, "refs/heads/"); ok && branch == d.Branch {
+				match = &ev.Pushes[i]
+			}
+		}
+		if match == nil {
+			ignore(w, d, ev.Delivery, "ref "+strings.Join(refs, ", ")+" is not branch "+d.Branch)
+			return
+		}
+		if match.Deleted {
+			ignore(w, d, ev.Delivery, "branch deleted")
 			return
 		}
 
 		s.submit(w, d, Trigger{
 			Source:     TriggerWebhook,
-			Delivery:   delivery,
-			Repository: p.Repository.FullName,
-			Ref:        p.Ref,
-			Branch:     branch,
-			Commit:     p.After,
-			Pusher:     p.Pusher.Name,
+			Provider:   d.Provider,
+			Delivery:   ev.Delivery,
+			Repository: ev.Repository,
+			Ref:        match.Ref,
+			Branch:     d.Branch,
+			Commit:     match.Commit,
+			Pusher:     ev.Pusher,
 		})
 	}
 }
@@ -257,6 +247,7 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	s.submit(w, d, Trigger{
 		Source:     TriggerManual,
+		Provider:   d.Provider,
 		Repository: d.Repository,
 		Ref:        "refs/heads/" + d.Branch,
 		Branch:     d.Branch,
@@ -291,20 +282,6 @@ func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {
 func ignore(w http.ResponseWriter, d *DeployConfig, delivery, reason string) {
 	log.Printf("deploy=%s delivery=%s ignored: %s", d.Name, delivery, reason)
 	writeJSON(w, http.StatusOK, map[string]string{"deploy": d.Name, "status": "ignored", "reason": reason})
-}
-
-func validSignature(secret, body []byte, header string) bool {
-	sig, ok := strings.CutPrefix(header, "sha256=")
-	if !ok {
-		return false
-	}
-	got, err := hex.DecodeString(sig)
-	if err != nil {
-		return false
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
-	return hmac.Equal(got, mac.Sum(nil))
 }
 
 func (s *Server) handleStatusAll(w http.ResponseWriter, r *http.Request) {

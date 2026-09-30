@@ -46,7 +46,7 @@ func NewNotifier(cfg *Config) *Notifier {
 
 // CommitStatus sets a GitHub commit status ("pending", "success", "failure").
 func (n *Notifier) CommitStatus(d *DeployConfig, t Trigger, state, description string) {
-	if n == nil || n.github.token == "" || !n.github.commitStatus || !fullSHARe.MatchString(t.Commit) || t.Repository == "" {
+	if n == nil || d.Provider != "github" || n.github.token == "" || !n.github.commitStatus || !fullSHARe.MatchString(t.Commit) || t.Repository == "" {
 		return
 	}
 	if len(description) > 140 {

@@ -94,6 +94,8 @@ func parseLog(path string) State {
 			st.StartedAt = &ts
 		case "trigger":
 			st.Trigger = val
+		case "provider":
+			st.Provider = val
 		case "repository":
 			st.Repository = val
 		case "branch":

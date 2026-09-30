@@ -39,6 +39,7 @@ retain = 30                   # log files kept per deploy (0 = keep all)
 #commit_status = false        # e.g. a read-only token used only for wait_for_ci
 
 [deploy.frontend]
+# provider = "github"         # github (default), gitea, forgejo, gitlab, bitbucket
 path = "/hooks/frontend"
 repository = "acme/frontend"
 branch = "main"

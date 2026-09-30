@@ -896,3 +896,187 @@ func TestWaitForCIRequiresToken(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// providerCase builds a webhook request the way each git host sends it.
+type providerCase struct {
+	provider, repo string
+	request        func(branch, commit string, deleted, validAuth bool) *http.Request
+	ping           func() *http.Request
+}
+
+func hexHMAC(body []byte) string {
+	return strings.TrimPrefix(sign(body), "sha256=")
+}
+
+func jsonRequest(path string, body []byte, headers map[string]string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return req
+}
+
+func authOr(valid bool, good, bad string) string {
+	if valid {
+		return good
+	}
+	return bad
+}
+
+var zero40 = strings.Repeat("0", 40)
+
+var providerCases = []providerCase{
+	{
+		provider: "gitea", repo: "acme/agency",
+		request: func(branch, commit string, deleted, valid bool) *http.Request {
+			if deleted {
+				commit = zero40
+			}
+			body := []byte(`{"ref":"refs/heads/` + branch + `","before":"` + sha1 + `","after":"` + commit + `","repository":{"full_name":"acme/agency"},"pusher":{"id":1,"login":"gitea-dev","username":"gitea-dev"}}`)
+			// Only the Gitea headers, no GitHub-compatible ones.
+			return jsonRequest("/hooks/agency", body, map[string]string{
+				"X-Gitea-Event": "push", "X-Gitea-Delivery": "gt-" + commit[:6],
+				"X-Gitea-Signature": authOr(valid, hexHMAC(body), strings.Repeat("0", 64)),
+			})
+		},
+	},
+	{
+		provider: "forgejo", repo: "acme/agency",
+		request: func(branch, commit string, deleted, valid bool) *http.Request {
+			if deleted {
+				commit = zero40
+			}
+			body := []byte(`{"ref":"refs/heads/` + branch + `","after":"` + commit + `","repository":{"full_name":"acme/agency"},"pusher":{"login":"fj-dev"}}`)
+			return jsonRequest("/hooks/agency", body, map[string]string{
+				"X-Forgejo-Event": "push", "X-Forgejo-Delivery": "fj-" + commit[:6],
+				"X-Forgejo-Signature": authOr(valid, hexHMAC(body), "nope"),
+			})
+		},
+	},
+	{
+		provider: "gitlab", repo: "acme/web/agency",
+		request: func(branch, commit string, deleted, valid bool) *http.Request {
+			checkout := `"` + commit + `"`
+			if deleted {
+				commit, checkout = zero40, "null"
+			}
+			body := []byte(`{"object_kind":"push","event_name":"push","ref":"refs/heads/` + branch + `","after":"` + commit + `","checkout_sha":` + checkout + `,"user_username":"gl-dev","user_name":"GL Dev","project":{"path_with_namespace":"acme/web/agency"}}`)
+			return jsonRequest("/hooks/agency", body, map[string]string{
+				"X-Gitlab-Event": "Push Hook", "Idempotency-Key": "gl-" + commit[:6],
+				"X-Gitlab-Token": authOr(valid, testSecret, "wrong"),
+			})
+		},
+	},
+	{
+		provider: "bitbucket", repo: "acme/agency",
+		request: func(branch, commit string, deleted, valid bool) *http.Request {
+			change := `{"new":{"type":"branch","name":"` + branch + `","target":{"hash":"` + commit + `"}},"old":{"type":"branch","name":"` + branch + `"}}`
+			if deleted {
+				change = `{"new":null,"old":{"type":"branch","name":"` + branch + `","target":{"hash":"` + sha1 + `"}},"closed":true}`
+			}
+			// A tag and another branch in the same push must not confuse it.
+			body := []byte(`{"actor":{"nickname":"bb-dev","display_name":"BB Dev"},"repository":{"full_name":"acme/agency"},"push":{"changes":[` +
+				`{"new":{"type":"tag","name":"v1","target":{"hash":"` + sha3 + `"}}},` +
+				`{"new":{"type":"branch","name":"other","target":{"hash":"` + sha3 + `"}}},` + change + `]}}`)
+			return jsonRequest("/hooks/agency", body, map[string]string{
+				"X-Event-Key": "repo:push", "X-Request-UUID": "bb-" + commit[:6],
+				"X-Hub-Signature": authOr(valid, sign(body), "sha256=00"),
+			})
+		},
+	},
+	{
+		provider: "bitbucket", repo: "PROJ/agency", // Data Center / Server
+		request: func(branch, commit string, deleted, valid bool) *http.Request {
+			typ := "UPDATE"
+			if deleted {
+				typ, commit = "DELETE", zero40
+			}
+			body := []byte(`{"eventKey":"repo:refs_changed","actor":{"name":"bbs-dev","displayName":"BBS Dev"},"repository":{"slug":"agency","project":{"key":"PROJ"}},"changes":[{"ref":{"id":"refs/heads/` + branch + `","displayId":"` + branch + `","type":"BRANCH"},"refId":"refs/heads/` + branch + `","fromHash":"` + sha1 + `","toHash":"` + commit + `","type":"` + typ + `"}]}`)
+			return jsonRequest("/hooks/agency", body, map[string]string{
+				"X-Event-Key": "repo:refs_changed", "X-Request-Id": "bbs-" + commit[:6],
+				"X-Hub-Signature": authOr(valid, sign(body), "sha256=00"),
+			})
+		},
+		ping: func() *http.Request {
+			body := []byte(`{"test":true}`)
+			return jsonRequest("/hooks/agency", body, map[string]string{"X-Event-Key": "diagnostics:ping", "X-Hub-Signature": sign(body)})
+		},
+	},
+}
+
+func TestProviders(t *testing.T) {
+	for _, c := range providerCases {
+		t.Run(c.provider+"/"+c.repo, func(t *testing.T) {
+			e := newEnv(t, `echo "provider=$DEPLOY_PROVIDER commit=$DEPLOY_COMMIT pusher=$DEPLOY_PUSHER"`, "")
+			d := e.cfg.Deploy["agency"]
+			d.Provider, d.Repository = c.provider, c.repo
+			e.h = NewServer(e.cfg, e.runner).Routes()
+			serve := func(r *http.Request) *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				e.h.ServeHTTP(rec, r)
+				return rec
+			}
+
+			if rec := serve(c.request("main", sha2, false, false)); rec.Code != http.StatusUnauthorized {
+				t.Fatalf("bad auth: %d %s", rec.Code, rec.Body)
+			}
+			if rec := serve(c.request("dev", sha2, false, true)); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ignored") {
+				t.Fatalf("other branch: %d %s", rec.Code, rec.Body)
+			}
+			if rec := serve(c.request("main", sha2, true, true)); !strings.Contains(rec.Body.String(), "branch deleted") {
+				t.Fatalf("deleted branch: %d %s", rec.Code, rec.Body)
+			}
+			if c.ping != nil {
+				if rec := serve(c.ping()); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "pong") {
+					t.Fatalf("ping: %d %s", rec.Code, rec.Body)
+				}
+			}
+			rec := serve(c.request("main", sha2, false, true))
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("push: %d %s", rec.Code, rec.Body)
+			}
+			st := e.waitIdle(t)
+			if st.Status != StatusSuccess || st.Commit != sha2 || st.Provider != c.provider || st.Delivery == "" || st.Pusher == "" {
+				t.Fatalf("state %+v", st)
+			}
+			out, _ := os.ReadFile(filepath.Join(e.logDir, "agency", st.Log))
+			if !strings.Contains(string(out), "provider="+c.provider+" commit="+sha2+" pusher="+st.Pusher) {
+				t.Errorf("log:\n%s", out)
+			}
+			// Same delivery again (a retry) is ignored.
+			if rec := serve(c.request("main", sha2, false, true)); !strings.Contains(rec.Body.String(), "duplicate") {
+				t.Errorf("retry: %d %s", rec.Code, rec.Body)
+			}
+			if h, _ := e.runner.History("agency", 0); len(h) != 1 || h[0].Provider != c.provider {
+				t.Errorf("history %+v", h)
+			}
+		})
+	}
+}
+
+func TestGitLabIgnoresTagPush(t *testing.T) {
+	e := newEnv(t, `true`, "")
+	d := e.cfg.Deploy["agency"]
+	d.Provider, d.Repository = "gitlab", "acme/agency"
+	e.h = NewServer(e.cfg, e.runner).Routes()
+	body := []byte(`{"object_kind":"tag_push","ref":"refs/tags/v1","after":"` + sha1 + `","project":{"path_with_namespace":"acme/agency"}}`)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, jsonRequest("/hooks/agency", body, map[string]string{"X-Gitlab-Event": "Tag Push Hook", "X-Gitlab-Token": testSecret}))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "not handled") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestProviderConfig(t *testing.T) {
+	for toml, wantErr := range map[string]string{
+		"provider = \"svn\"": "provider must be one of",
+		"provider = \"gitlab\"\nwait_for_ci = [\"tests\"]": "only supported with provider",
+	} {
+		path := filepath.Join(t.TempDir(), "c.toml")
+		os.WriteFile(path, []byte("[github]\ntoken_env = \"T\"\n[deploy.a]\npath = \"/a\"\nrepository = \"a/b\"\nsecret_env = \"X\"\ncommand = \"true\"\n"+toml+"\n"), 0o600)
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("%q: err %v", toml, err)
+		}
+	}
+}

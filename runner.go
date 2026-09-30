@@ -53,6 +53,7 @@ var (
 // Trigger describes what started a deploy.
 type Trigger struct {
 	Source     string
+	Provider   string
 	Delivery   string
 	Repository string
 	Ref        string
@@ -67,6 +68,7 @@ type State struct {
 	Deploy     string      `json:"deploy"`
 	Status     string      `json:"status"`
 	Trigger    string      `json:"trigger,omitempty"`
+	Provider   string      `json:"provider,omitempty"`
 	StartedAt  *time.Time  `json:"started_at,omitempty"`
 	FinishedAt *time.Time  `json:"finished_at,omitempty"`
 	Duration   string      `json:"duration,omitempty"`
@@ -257,6 +259,7 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 		Deploy:     d.Name,
 		Status:     initialStatus(d, t),
 		Trigger:    t.Source,
+		Provider:   t.Provider,
 		StartedAt:  &startedAt,
 		Delivery:   t.Delivery,
 		Repository: t.Repository,
@@ -289,6 +292,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 
 	logf("deploy=%s status=started", d.Name)
 	logf("trigger=%s", t.Source)
+	logf("provider=%s", t.Provider)
 	logf("repository=%s", t.Repository)
 	logf("branch=%s", t.Branch)
 	logf("commit=%s", t.Commit)
@@ -472,6 +476,7 @@ func (r *Runner) commandEnv(d *DeployConfig, t Trigger) []string {
 	return append(env,
 		"DEPLOY_NAME="+d.Name,
 		"DEPLOY_TRIGGER="+t.Source,
+		"DEPLOY_PROVIDER="+t.Provider,
 		"DEPLOY_REPOSITORY="+t.Repository,
 		"DEPLOY_REF="+t.Ref,
 		"DEPLOY_BRANCH="+t.Branch,

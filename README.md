@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/aitorroma/nimdeploy/actions/workflows/ci.yml/badge.svg)](https://github.com/aitorroma/nimdeploy/actions/workflows/ci.yml)
 
-Receives GitHub `push` webhooks and runs a deploy command per repository. Every
+Receives `push` webhooks from GitHub, Gitea, Forgejo, GitLab or Bitbucket and
+runs a deploy command per repository. Every
 run gets its own log file, `latest.log` always points at the newest one, and
 `/status` tells you what each deploy is doing.
 
@@ -71,7 +72,8 @@ See [`config.example.toml`](config.example.toml). Per deploy:
 | key | default | |
 |---|---|---|
 | `path` | required | URL path GitHub posts to |
-| `repository` | required | `owner/repo`, must match the payload |
+| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab` or `bitbucket` (Cloud and Data Center), see [Git providers](#git-providers) |
+| `repository` | required | repository the pushes must come from, as the provider names it (see below); pushes from any other repository are ignored |
 | `branch` | `main` | other branches are ignored |
 | `secret_env` | required | env var holding the webhook secret; startup fails if empty |
 | `command`, `args` | required | run directly, no shell. Use `command = "/bin/bash"`, `args = ["-c", "..."]` for inline scripts |
@@ -539,6 +541,41 @@ socket automatically.
 
 If `listen` is not local and no API token is configured, nimdeploy warns at
 startup that `/status` is open.
+
+## Git providers
+
+Each deploy sets `provider`; the webhook in the git host must send **push**
+events, as **JSON**, with the deploy's secret:
+
+| `provider` | `repository` | Where | Secret |
+|---|---|---|---|
+| `github` (default) | `owner/repo` | Settings → Webhooks → Add webhook, content type `application/json`, "Just the push event" | *Secret* (HMAC, `X-Hub-Signature-256`) |
+| `gitea` | `owner/repo` | Settings → Webhooks → Add webhook → Gitea, POST, `application/json`, trigger *Push events* | *Secret* (HMAC, `X-Gitea-Signature`) |
+| `forgejo` | `owner/repo` | Settings → Webhooks → Add webhook → Forgejo, same as Gitea | *Secret* (HMAC, `X-Forgejo-Signature`) |
+| `gitlab` | `group/subgroup/project` (`path_with_namespace`) | Settings → Webhooks → Add new webhook, trigger *Push events* | *Secret token* (compared as is, `X-Gitlab-Token`) |
+| `bitbucket` (Cloud) | `workspace/repo` | Repository settings → Webhooks → Add webhook, trigger *Repository: Push* | *Secret* (HMAC, `X-Hub-Signature`) |
+| `bitbucket` (Data Center / Server) | `PROJECT/repo` (project **key**) | Repository settings → Webhooks → Create webhook, event *Repository: Push* | *Secret* (HMAC, `X-Hub-Signature`) |
+
+Everything else works the same for all of them: branch filter, deleted
+branches ignored, duplicate deliveries dropped, queue, logs, history,
+notifications. The script gets `DEPLOY_PROVIDER`. `wait_for_ci` and commit
+statuses use the GitHub API, so they are only available with `github`.
+
+Notes per provider:
+
+- **Gitea / Forgejo:** by default they refuse to send webhooks to private or
+  loopback addresses. If nimdeploy runs on the same server or network as the
+  forge, allow it in the forge's `app.ini`: `[webhook] ALLOWED_HOST_LIST =
+  loopback` (or `private`, or the host name). The *Test delivery* button sends
+  a real push of the default branch, so it deploys.
+- **GitLab:** the secret token travels as is (over HTTPS), not as a signature.
+  Tag pushes are ignored. *Test → Push events* sends a real push and deploys.
+- **Bitbucket:** set the secret (it's optional in Bitbucket, required here).
+  One push can update several branches; only the deploy's branch counts. Data
+  Center's *Test connection* gets `pong`.
+
+Tested against real Gitea 28 and Forgejo 13; GitLab and Bitbucket against
+their documented payloads.
 
 ## GitHub setup
 

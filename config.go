@@ -100,6 +100,9 @@ type GitHubConfig struct {
 type DeployConfig struct {
 	Name string `toml:"-"`
 
+	// Provider is the git host sending the webhooks: github (default),
+	// gitea, forgejo, gitlab or bitbucket (Cloud and Data Center).
+	Provider   string `toml:"provider"`
 	Path       string `toml:"path"`
 	Repository string `toml:"repository"`
 	Branch     string `toml:"branch"`
@@ -296,6 +299,12 @@ func (d *DeployConfig) validate() error {
 			return fmt.Errorf("path %s is reserved", d.Path)
 		}
 	}
+	if d.Provider == "" {
+		d.Provider = "github"
+	}
+	if _, ok := providers[d.Provider]; !ok {
+		return fmt.Errorf("provider must be one of: %s", strings.Join(providerNames(), ", "))
+	}
 	if d.Repository == "" {
 		return fmt.Errorf("repository is required")
 	}
@@ -327,6 +336,9 @@ func (d *DeployConfig) validate() error {
 	}
 	if d.CITimeout.Duration < 0 {
 		return fmt.Errorf("ci_timeout must be positive")
+	}
+	if len(d.WaitForCI) > 0 && d.Provider != "github" {
+		return fmt.Errorf("wait_for_ci is only supported with provider = \"github\"")
 	}
 	for _, w := range d.WaitForCI {
 		if strings.TrimSpace(w) == "" {
