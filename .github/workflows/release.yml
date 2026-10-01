@@ -29,9 +29,11 @@ jobs:
               -ldflags="-s -w -X main.version=${VERSION}" -o "dist/$name/nimdeploy" .
             cp -r install.sh config.example.toml deploy README.md LICENSE "dist/$name/"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
+            # Bare binary with a fixed name, for releases/latest/download/... one-liners.
+            cp "dist/$name/nimdeploy" "dist/nimdeploy_linux_${arch}"
           done
-          (cd dist && sha256sum ./*.tar.gz > checksums.txt)
+          (cd dist && sha256sum ./*.tar.gz ./nimdeploy_linux_* > checksums.txt)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/nimdeploy_linux_* dist/checksums.txt --generate-notes --title "$GITHUB_REF_NAME"

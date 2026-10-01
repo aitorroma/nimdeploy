@@ -21,6 +21,9 @@ import (
 )
 
 const usage = `Usage:
+  nimdeploy install                     install for the current user, no root needed
+                                        (~/.local/bin, ~/.config/nimdeploy, systemd user service)
+  nimdeploy uninstall [--purge]         remove a user install
   nimdeploy [flags]                     run the webhook server
   nimdeploy [flags] run [-commit SHA] [-f] <deploy>
                                         start a deploy through the running server
@@ -52,6 +55,15 @@ func main() {
 	if *showVersion {
 		fmt.Println("nimdeploy", version)
 		return
+	}
+	// These work before any config exists.
+	if args := flag.Args(); len(args) > 0 {
+		switch args[0] {
+		case "install":
+			os.Exit(cliInstall(args[1:]))
+		case "uninstall":
+			os.Exit(cliUninstall(args[1:]))
+		}
 	}
 
 	cfg, err := LoadConfig(*configPath)

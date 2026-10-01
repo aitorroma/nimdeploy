@@ -1093,3 +1093,105 @@ func TestPlaceholderSecretRejected(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestUserInstall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	app := t.TempDir()
+	stage := t.TempDir()
+	p, _ := newUserPaths(stage)
+	read := func(path string) string { b, _ := os.ReadFile(p.at(path)); return string(b) }
+
+	// Example mode: template config pointing at the user's log dir.
+	if err := writeUserInstall(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(read(p.config), `directory = "`+home+`/.local/state/nimdeploy"`) {
+		t.Errorf("logs dir not rewritten:\n%s", read(p.config))
+	}
+	if info, _ := os.Stat(p.at(p.secrets)); info.Mode().Perm() != 0o600 || !hasPlaceholders(p.at(p.secrets)) {
+		t.Errorf("secrets %v placeholders=%v", info.Mode().Perm(), hasPlaceholders(p.at(p.secrets)))
+	}
+	if info, _ := os.Stat(p.at(p.bin)); info.Mode().Perm() != 0o755 {
+		t.Errorf("binary mode %v", info.Mode())
+	}
+	if !strings.Contains(read(p.unit), "ExecStart=%h/.local/bin/nimdeploy -config %E/nimdeploy/config.toml") {
+		t.Errorf("unit:\n%s", read(p.unit))
+	}
+
+	// Quick mode on a fresh home: config + generated secret, validated.
+	os.RemoveAll(filepath.Join(stage, home))
+	q := quickDeploy{repo: "Acme/Shop", provider: "gitlab", branch: "prod", dir: app, command: "./deploy.sh", listen: "127.0.0.1:9100"}
+	if err := q.complete(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUserInstall(p, &q); err != nil {
+		t.Fatal(err)
+	}
+	if q.name != "shop" || q.secretEnv != "SHOP_WEBHOOK_SECRET" || len(q.secret) != 64 || hasPlaceholders(p.at(p.secrets)) {
+		t.Fatalf("quick %+v", q)
+	}
+	d := q.cfg.Deploy["shop"]
+	if d.Provider != "gitlab" || d.Branch != "prod" || d.WorkingDirectory != app || d.Path != "/hooks/shop" ||
+		strings.Join(d.Args, " ") != "-eo pipefail -c ./deploy.sh" || q.cfg.Server.Listen != "127.0.0.1:9100" {
+		t.Fatalf("deploy %+v", d)
+	}
+	if !strings.Contains(nginxSnippet(q.cfg, false), "location = /hooks/shop {") {
+		t.Error("nginx snippet")
+	}
+
+	// Running it again keeps the secret; another repo is added next to it.
+	first := q.secret
+	q2 := q
+	if err := writeUserInstall(p, &q2); err != nil || q2.secret != first {
+		t.Fatalf("rerun: %v secret changed=%v", err, q2.secret != first)
+	}
+	q3 := quickDeploy{repo: "acme/blog", provider: "github", branch: "main", dir: app, command: "make deploy", listen: "127.0.0.1:9100"}
+	q3.complete()
+	if err := writeUserInstall(p, &q3); err != nil {
+		t.Fatal(err)
+	}
+	if len(q3.cfg.Deploy) != 2 || q3.secret == first || strings.Count(read(p.config), "[deploy.shop]") != 1 {
+		t.Fatalf("second deploy: %d deploys\n%s", len(q3.cfg.Deploy), read(p.config))
+	}
+
+	// Bad input is refused before touching anything.
+	bad := quickDeploy{repo: "acme/x", provider: "svn", branch: "main", dir: app, command: "true", listen: "127.0.0.1:9100"}
+	if err := bad.complete(); err == nil {
+		t.Error("svn provider accepted")
+	}
+	if err := (&quickDeploy{repo: "acme/x", provider: "github", dir: "/nonexistent", command: "true", listen: ":1"}).complete(); err == nil {
+		t.Error("missing dir accepted")
+	}
+
+	if code := cliUninstall([]string{"-destdir", stage, "--purge"}); code != 0 || exists(p.at(p.bin)) || exists(p.at(p.conf)) || exists(p.at(p.unit)) {
+		t.Fatalf("uninstall code=%d", code)
+	}
+}
+
+func TestUserInstallRollsBack(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	stage := t.TempDir()
+	p, _ := newUserPaths(stage)
+	if err := writeUserInstall(p, nil); err != nil { // example config, change-me secrets
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(p.at(p.config))
+	beforeSecrets, _ := os.ReadFile(p.at(p.secrets))
+	q := quickDeploy{repo: "acme/shop", provider: "github", branch: "main", dir: t.TempDir(), command: "true", listen: "127.0.0.1:9000"}
+	q.complete()
+	err := writeUserInstall(p, &q)
+	if err == nil || !strings.Contains(err.Error(), "uninstall --purge") {
+		t.Fatalf("err %v", err)
+	}
+	after, _ := os.ReadFile(p.at(p.config))
+	afterSecrets, _ := os.ReadFile(p.at(p.secrets))
+	if string(after) != string(before) || string(afterSecrets) != string(beforeSecrets) {
+		t.Fatal("config or secrets changed after a failed install")
+	}
+}

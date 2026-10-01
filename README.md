@@ -49,10 +49,56 @@ the systemd unit, then enables the service. It generates `NIMDEPLOY_API_TOKEN`
 in `secrets.env` if missing, and starts the service only once `secrets.env` has
 no `change-me` placeholders; on upgrades it restarts it.
 
-### Without root
+### Without root, in one command
 
-Run the installer as a normal user (or pass `--user`) and everything stays in
-your home directory, run by your systemd **user** manager:
+As any normal user (no sudo), download the binary and let it install and
+configure itself:
+
+```bash
+curl -fsSLo nimdeploy https://github.com/aitorroma/nimdeploy/releases/latest/download/nimdeploy_linux_amd64   # or _arm64
+chmod +x nimdeploy
+./nimdeploy install --repo acme/shop --dir /srv/shop --command ./deploy.sh
+```
+
+That copies itself to `~/.local/bin`, writes the config with that deploy,
+generates the webhook secret and the API token, starts a systemd user service
+and ends with everything left to do:
+
+```text
+Webhook for acme/shop (github, branch main):
+  URL      https://<the domain nginx serves>/hooks/shop
+  Secret   892082e5cd30...
+  Where    Settings → Webhooks → Add webhook; content type application/json; Just the push event
+
+nginx: add this inside the site's server { } block (it is also printed by "nimdeploy nginx"):
+
+    location = /hooks/shop {
+        proxy_pass http://127.0.0.1:9000;
+        ...
+    }
+
+Next steps:
+  1. Give the nginx block above to whoever manages nginx.
+  2. Create the webhook in github with the URL and secret above.
+  3. Check it:     nimdeploy status ...
+
+Important: lingering is off ... Ask an administrator to run once:
+    sudo loginctl enable-linger deploy
+```
+
+Options: `--provider gitlab|gitea|forgejo|bitbucket` (default `github`),
+`--branch` (default `main`), `--name` (default: repository name),
+`--listen` (default `127.0.0.1:9000`). `--command` runs with
+`bash -eo pipefail -c`, so it can be a script or a chain like
+`git pull && npm ci && npm run build`, and stops at the first error. Running it
+again keeps the secret; with another `--repo` it adds a second deploy. If the
+result doesn't validate, nothing is changed. Without `--repo` it installs an
+example config to edit by hand. `nimdeploy uninstall [--purge]` removes it.
+
+### Without root, step by step
+
+The same files, explained (`./install.sh` from the release archive does the
+same as `nimdeploy install` when run without root):
 
 | | |
 |---|---|

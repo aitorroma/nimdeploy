@@ -5,8 +5,9 @@
 #   sudo ./install.sh uninstall       # remove binary and unit, keep config and logs
 #   sudo ./install.sh uninstall --purge   # also remove /etc/nimdeploy and the logs
 #
-# Without root (automatic when not run as root, or with --user): everything
-# goes under $HOME and runs as a systemd user service.
+# Without root (automatic when not run as root, or with --user): runs
+# "nimdeploy install" / "nimdeploy uninstall", which put everything under $HOME
+# and use a systemd user service. See "./nimdeploy install -h".
 #   ./install.sh                      # ~/.local/bin, ~/.config/nimdeploy, ~/.local/state/nimdeploy
 #   ./install.sh uninstall [--purge]
 #
@@ -35,29 +36,11 @@ case "${1:-install}" in
 install | uninstall) [[ $EUID -ne 0 && -z "$DESTDIR" ]] && USER_MODE=1 ;;
 esac
 
-if ((USER_MODE)); then
-	CONF_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-	STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
-	SERVICE_USER="$(id -un)"
-	BIN="$DESTDIR$HOME/.local/bin/nimdeploy"
-	ETC="$DESTDIR$CONF_HOME/nimdeploy"
-	UNIT="$DESTDIR$CONF_HOME/systemd/user/nimdeploy.service"
-	LOGS="$DESTDIR$STATE_HOME/nimdeploy"
-	LOGS_REAL="$STATE_HOME/nimdeploy"
-	UNIT_SRC="$SRC/deploy/nimdeploy-user.service"
-	SUDO=""
-	JOURNAL="journalctl --user -u nimdeploy"
-else
-	SERVICE_USER="${SERVICE_USER:-deploy}"
-	BIN="$DESTDIR/usr/local/bin/nimdeploy"
-	ETC="$DESTDIR/etc/nimdeploy"
-	UNIT="$DESTDIR/etc/systemd/system/nimdeploy.service"
-	LOGS="$DESTDIR/var/log/nimdeploy"
-	LOGS_REAL="/var/log/nimdeploy"
-	UNIT_SRC="$SRC/deploy/nimdeploy.service"
-	SUDO="sudo "
-	JOURNAL="journalctl -u nimdeploy"
-fi
+SERVICE_USER="${SERVICE_USER:-deploy}"
+BIN="$DESTDIR/usr/local/bin/nimdeploy"
+ETC="$DESTDIR/etc/nimdeploy"
+UNIT="$DESTDIR/etc/systemd/system/nimdeploy.service"
+LOGS="$DESTDIR/var/log/nimdeploy"
 
 HESTIA="${HESTIA:-/usr/local/hestia}"
 HESTIA_HOME="$DESTDIR${HESTIA_HOME:-/home}"
@@ -69,12 +52,7 @@ die() { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; exit 1; }
 
 live() { [[ -z "$DESTDIR" ]]; }
 
-# sc runs systemctl for the system or the user manager.
-sc() {
-	if ((USER_MODE)); then systemctl --user "$@"; else systemctl "$@"; fi
-}
-
-systemctl_() { if live; then sc "$@"; fi; }
+systemctl_() { if live; then systemctl "$@"; fi; }
 
 require_root() {
 	if live && [[ $EUID -ne 0 ]]; then
@@ -115,34 +93,13 @@ ensure_api_token() {
 	log "generated NIMDEPLOY_API_TOKEN in $file"
 }
 
-# ensure_linger keeps the user manager (and nimdeploy) running without an
-# open session and starts it on boot.
-ensure_linger() {
-	if [[ "$(loginctl show-user "$SERVICE_USER" -p Linger --value 2>/dev/null)" == yes ]]; then
-		return
-	fi
-	if loginctl enable-linger "$SERVICE_USER" 2>/dev/null; then
-		log "enabled lingering: nimdeploy keeps running after logout and starts on boot"
-		return
-	fi
-	warn "lingering is off and this user may not enable it: nimdeploy stops when your last"
-	warn "session ends and does not start on boot. Ask an administrator to run once:"
-	warn "    sudo loginctl enable-linger $SERVICE_USER"
-}
-
 do_install() {
-	((USER_MODE)) || require_root install
+	require_root install
 	build_binary
-	((USER_MODE)) || ensure_user
-	if ((USER_MODE)); then
-		log "user mode: installing for $SERVICE_USER under $HOME (no root needed)"
-		if live && ! systemctl --user show-environment >/dev/null 2>&1; then
-			die "no systemd user manager (systemctl --user); log in through SSH or a real session and retry"
-		fi
-	fi
+	ensure_user
 
 	local was_active=0
-	if live && sc is-active --quiet nimdeploy 2>/dev/null; then
+	if live && systemctl is-active --quiet nimdeploy 2>/dev/null; then
 		was_active=1
 	fi
 
@@ -160,8 +117,7 @@ do_install() {
 		log "keeping existing $ETC/config.toml"
 	else
 		log "installing example config to $ETC/config.toml"
-		sed "s|^directory = \"/var/log/nimdeploy\"|directory = \"$LOGS_REAL\"|" "$SRC/config.example.toml" >"$ETC/config.toml"
-		chmod 0640 "$ETC/config.toml"
+		install -m 0640 "$SRC/config.example.toml" "$ETC/config.toml"
 	fi
 	if [[ -e "$ETC/secrets.env" ]]; then
 		log "keeping existing $ETC/secrets.env"
@@ -170,30 +126,24 @@ do_install() {
 		install -m 0600 "$SRC/deploy/secrets.env.example" "$ETC/secrets.env"
 	fi
 	ensure_api_token
-	if ((USER_MODE)); then
-		install -d -m 0750 "$LOGS"
-	elif live; then
+	if live; then
 		chown root:"$SERVICE_USER" "$ETC" "$ETC/config.toml"
 		chown root:root "$ETC/secrets.env"
 	fi
 
 	log "installing unit to $UNIT"
 	install -d "$(dirname "$UNIT")"
-	if ((USER_MODE)); then
-		cp "$UNIT_SRC" "$UNIT"
-	else
-		sed -e "s/^User=.*/User=$SERVICE_USER/" -e "s/^Group=.*/Group=$SERVICE_USER/" "$UNIT_SRC" >"$UNIT"
-	fi
+	sed -e "s/^User=.*/User=$SERVICE_USER/" -e "s/^Group=.*/Group=$SERVICE_USER/" \
+		"$SRC/deploy/nimdeploy.service" >"$UNIT"
 	chmod 0644 "$UNIT"
 
-	if ((!USER_MODE)) && [[ -x "$HESTIA/bin/v-list-web-domain" ]]; then
+	if [[ -x "$HESTIA/bin/v-list-web-domain" ]]; then
 		log "HestiaCP detected: publish the hooks on a domain with: sudo $0 hestia <domain>"
 	fi
 
 	live || { log "staged under $DESTDIR"; return; }
 
-	sc daemon-reload
-	((USER_MODE)) && ensure_linger
+	systemctl daemon-reload
 
 	if grep -q 'change-me' "$ETC/secrets.env"; then
 		# Not enabled either: an enabled unit would start on the next boot (or,
@@ -204,29 +154,29 @@ do_install() {
 Next steps:
   1. Edit $ETC/config.toml   (deploys, repositories, commands)
   2. Edit $ETC/secrets.env   (one secret per secret_env, e.g. openssl rand -hex 32)
-  3. Start:  ${SUDO}systemctl $( ((USER_MODE)) && echo "--user ")enable --now nimdeploy   (validates the config first)
-  4. Try:    ${SUDO}nimdeploy status
-             ${SUDO}nimdeploy run -f <deploy>
-  5. Logs:   $JOURNAL -f      (each deploy: $LOGS_REAL/<deploy>/latest.log)
-  6. Proxy:  ${SUDO}nimdeploy nginx   prints the nginx locations for the hooks
+  3. Start:  sudo systemctl enable --now nimdeploy   (validates the config first)
+  4. Try:    sudo nimdeploy status
+             sudo nimdeploy run -f <deploy>
+  5. Logs:   journalctl -u nimdeploy -f      (each deploy: /var/log/nimdeploy/<deploy>/latest.log)
+  6. Proxy:  sudo nimdeploy nginx   prints the nginx locations for the hooks
 EOF
 		return
 	fi
 
-	sc enable nimdeploy >/dev/null 2>&1
+	systemctl enable nimdeploy >/dev/null 2>&1
 	if ((was_active)); then
 		log "restarting nimdeploy"
-		sc restart nimdeploy
+		systemctl restart nimdeploy
 	else
 		log "starting nimdeploy"
-		sc start nimdeploy
+		systemctl start nimdeploy
 	fi
 	sleep 1
-	if sc is-active --quiet nimdeploy; then
+	if systemctl is-active --quiet nimdeploy; then
 		log "nimdeploy is running"
 	else
-		sc status nimdeploy --no-pager || true
-		die "nimdeploy failed to start, see: $JOURNAL -e"
+		systemctl status nimdeploy --no-pager || true
+		die "nimdeploy failed to start, see: journalctl -u nimdeploy -e"
 	fi
 }
 
@@ -362,17 +312,17 @@ remove_hestia_snippets() {
 }
 
 do_uninstall() {
-	((USER_MODE)) || require_root uninstall
+	require_root uninstall
 	local purge=0
 	[[ "${1:-}" == "--purge" ]] && purge=1
 
-	if live && sc list-unit-files nimdeploy.service >/dev/null 2>&1; then
+	if live && systemctl list-unit-files nimdeploy.service >/dev/null 2>&1; then
 		log "stopping and disabling nimdeploy"
-		sc disable --now nimdeploy 2>/dev/null || true
+		systemctl disable --now nimdeploy 2>/dev/null || true
 	fi
 	rm -f "$UNIT" "$BIN"
 	systemctl_ daemon-reload
-	((USER_MODE)) || remove_hestia_snippets
+	remove_hestia_snippets
 
 	if ((purge)); then
 		log "removing $ETC and $LOGS"
@@ -380,12 +330,17 @@ do_uninstall() {
 	else
 		log "kept $ETC and $LOGS (use --purge to remove them)"
 	fi
-	if ((USER_MODE)); then
-		log "nimdeploy uninstalled (lingering, if enabled, was left as is: loginctl disable-linger)"
-	else
-		log "nimdeploy uninstalled (user $SERVICE_USER was not removed)"
-	fi
+	log "nimdeploy uninstalled (user $SERVICE_USER was not removed)"
 }
+
+if ((USER_MODE)); then
+	build_binary
+	cmd="${1:-install}"
+	shift || true
+	extra=()
+	[[ -n "$DESTDIR" ]] && extra=(-destdir "$DESTDIR")
+	exec "$SRC/nimdeploy" "$cmd" --user "${extra[@]+"${extra[@]}"}" "$@"
+fi
 
 case "${1:-install}" in
 install) do_install ;;
