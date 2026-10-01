@@ -1,0 +1,22 @@
+[Unit]
+Description=nimdeploy - git webhook deployer (user service)
+
+[Service]
+Type=simple
+# %E = ~/.config (or $XDG_CONFIG_HOME), %h = home directory
+EnvironmentFile=%E/nimdeploy/secrets.env
+ExecStartPre=%h/.local/bin/nimdeploy -config %E/nimdeploy/config.toml -check
+ExecStart=%h/.local/bin/nimdeploy -config %E/nimdeploy/config.toml
+# systemctl --user reload: validate first, then SIGHUP (running deploys continue).
+ExecReload=%h/.local/bin/nimdeploy -config %E/nimdeploy/config.toml -check
+ExecReload=/bin/kill -HUP $MAINPID
+# $XDG_RUNTIME_DIR/nimdeploy, for listen = "unix:/run/user/<uid>/nimdeploy/nimdeploy.sock"
+RuntimeDirectory=nimdeploy
+Restart=on-failure
+RestartSec=5
+# Let running deploys finish (shutdown_timeout) before systemd kills them.
+TimeoutStopSec=6min
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

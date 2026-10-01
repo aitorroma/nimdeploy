@@ -49,6 +49,37 @@ the systemd unit, then enables the service. It generates `NIMDEPLOY_API_TOKEN`
 in `secrets.env` if missing, and starts the service only once `secrets.env` has
 no `change-me` placeholders; on upgrades it restarts it.
 
+### Without root
+
+Run the installer as a normal user (or pass `--user`) and everything stays in
+your home directory, run by your systemd **user** manager:
+
+| | |
+|---|---|
+| binary | `~/.local/bin/nimdeploy` |
+| config, secrets | `~/.config/nimdeploy/config.toml`, `secrets.env` |
+| deploy logs | `~/.local/state/nimdeploy/<deploy>/` |
+| service | `~/.config/systemd/user/nimdeploy.service` → `systemctl --user start nimdeploy` |
+
+```bash
+./install.sh                         # no sudo
+systemctl --user start nimdeploy
+nimdeploy status                     # finds ~/.config/nimdeploy by itself
+journalctl --user -u nimdeploy -f
+./install.sh uninstall [--purge]
+```
+
+Deploys run as you, so they can only touch what you can. Listen on a port
+above 1024 (the default `127.0.0.1:9000` is fine) and hand the proxy's admin
+the output of `nimdeploy nginx`.
+
+User services stop when your last session ends and don't start on boot unless
+*lingering* is on. The installer runs `loginctl enable-linger`; where the system
+doesn't allow that to normal users, it tells you so, and an administrator has to
+run `sudo loginctl enable-linger <user>` once.
+
+### As root
+
 Deploys run as the `deploy` user (created if missing). Use another one with
 `sudo SERVICE_USER=www-data ./install.sh`; it must own the working directories.
 

@@ -1080,3 +1080,16 @@ func TestProviderConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaceholderSecretRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.toml")
+	os.WriteFile(path, []byte("[deploy.a]\npath = \"/a\"\nrepository = \"a/b\"\nsecret_env = \"PH_SECRET\"\ncommand = \"true\"\n"), 0o600)
+	t.Setenv("PH_SECRET", "change-me")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ResolveSecrets(); err == nil || !strings.Contains(err.Error(), "placeholder") {
+		t.Fatalf("err %v", err)
+	}
+}

@@ -7,12 +7,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -36,20 +38,26 @@ var version = "dev"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
-	configPath := flag.String("config", "/etc/nimdeploy/config.toml", "path to the TOML config")
-	envFile := flag.String("env-file", "/etc/nimdeploy/secrets.env", "secrets file the CLI reads the API token from")
+	configPath := flag.String("config", defaultConfigPath(), "path to the TOML config ($NIMDEPLOY_CONFIG)")
+	envFile := flag.String("env-file", "", "secrets file the CLI reads the API token from (default: secrets.env next to the config)")
 	check := flag.Bool("check", false, "validate the config and secrets, then exit")
 	flag.Usage = func() {
 		fmt.Fprint(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *envFile == "" {
+		*envFile = filepath.Join(filepath.Dir(*configPath), "secrets.env")
+	}
 	if *showVersion {
 		fmt.Println("nimdeploy", version)
 		return
 	}
 
 	cfg, err := LoadConfig(*configPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		log.Fatalf("config %s not found: install with ./install.sh (as root, or as a normal user for ~/.config/nimdeploy), or pass -config / $NIMDEPLOY_CONFIG", *configPath)
+	}
 	if err != nil {
 		log.Fatalf("config %s: %v", *configPath, err)
 	}
@@ -210,4 +218,22 @@ func isLocal(s ServerConfig) bool {
 	host, _, _ := net.SplitHostPort(s.Listen)
 	addr, err := netip.ParseAddr(host)
 	return host == "localhost" || (err == nil && addr.IsLoopback())
+}
+
+// defaultConfigPath is $NIMDEPLOY_CONFIG, else the per-user config of a
+// user-mode install (~/.config/nimdeploy/config.toml) when not root and it
+// exists, else /etc/nimdeploy/config.toml.
+func defaultConfigPath() string {
+	if p := os.Getenv("NIMDEPLOY_CONFIG"); p != "" {
+		return p
+	}
+	if os.Geteuid() != 0 {
+		if dir, err := os.UserConfigDir(); err == nil {
+			p := filepath.Join(dir, "nimdeploy", "config.toml")
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	return "/etc/nimdeploy/config.toml"
 }

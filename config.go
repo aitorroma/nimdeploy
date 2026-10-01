@@ -134,6 +134,10 @@ var (
 	envKeyRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 )
 
+// placeholderSecret is the value secrets.env.example ships with. It is
+// rejected so the service never runs with the template's secrets.
+const placeholderSecret = "change-me"
+
 const (
 	defaultDeployTimeout = 30 * time.Minute
 	defaultCITimeout     = 30 * time.Minute
@@ -357,6 +361,9 @@ func (c *Config) ResolveSecrets() error {
 		v := os.Getenv(name)
 		if v == "" {
 			return "", fmt.Errorf("%s: environment variable %s is empty or not set", key, name)
+		}
+		if v == placeholderSecret {
+			return "", fmt.Errorf("%s: %s is still the placeholder %q from the template; set a real secret", key, name, placeholderSecret)
 		}
 		return v, nil
 	}
