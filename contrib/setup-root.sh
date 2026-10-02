@@ -75,6 +75,11 @@ run() {
 	fi
 }
 
+UNIT_MARK="# Managed by nimdeploy setup-root.sh"
+
+# foreign_unit reports a unit file that exists and wasn't written by us.
+foreign_unit() { [[ -e "$1" ]] && ! grep -qF "$UNIT_MARK" "$1"; }
+
 # write_file PATH MODE OWNER: writes stdin to PATH, or shows it with --dry-run.
 write_file() {
 	local path=$1 mode=$2 owner=$3 tmp
@@ -195,8 +200,14 @@ fi
 
 # --- 3. pm2 --------------------------------------------------------------------------
 if ((WITH_PM2)); then
+	# An existing pm2 of the account (npm prefix, nvm...) wins: found with its
+	# login shell, so with its own PATH.
+	EXISTING_PM2=$(runuser -l "$SERVICE_USER" -c 'command -v pm2' 2>/dev/null || true)
 	if [[ -x "$PM2" ]]; then
 		log "pm2 already installed for $SERVICE_USER: $PM2"
+	elif [[ -n "$EXISTING_PM2" && -x "$EXISTING_PM2" ]]; then
+		PM2=$EXISTING_PM2
+		log "pm2 already installed for $SERVICE_USER: $PM2 (using it)"
 	elif command -v npm >/dev/null; then
 		log "installing pm2 for $SERVICE_USER in $SVC_HOME/.local"
 		if ((DRY)); then
@@ -213,7 +224,11 @@ fi
 
 # --- 4. systemd units ------------------------------------------------------------------
 log "systemd units: ${UNITS[*]} (User=$SERVICE_USER)"
+if foreign_unit /etc/systemd/system/nimdeploy.service; then
+	die "/etc/systemd/system/nimdeploy.service exists and was not created by this script; move it away and rerun"
+fi
 write_file /etc/systemd/system/nimdeploy.service 644 root:root <<EOF
+$UNIT_MARK
 [Unit]
 Description=nimdeploy - git webhook deployer (runs as $SERVICE_USER)
 # Listens on 127.0.0.1: no need to wait for network-online at boot.
@@ -240,8 +255,11 @@ KillMode=mixed
 [Install]
 WantedBy=multi-user.target
 EOF
-if ((WITH_PM2)); then
+if ((WITH_PM2)) && foreign_unit /etc/systemd/system/pm2-deploy.service; then
+	warn "pm2-deploy.service already exists and was not created by this script: keeping it as is"
+elif ((WITH_PM2)); then
 	write_file /etc/systemd/system/pm2-deploy.service 644 root:root <<EOF
+$UNIT_MARK
 [Unit]
 Description=pm2 of $SERVICE_USER (Node.js apps)
 After=network.target
@@ -252,7 +270,7 @@ User=$SERVICE_USER
 Group=$SVC_GROUP
 LimitNOFILE=infinity
 Environment=PM2_HOME=$SVC_HOME/.pm2
-Environment=PATH=$SVC_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$(dirname "$PM2"):$SVC_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 PIDFile=$SVC_HOME/.pm2/pm2.pid
 Restart=on-failure
 ExecStart=$PM2 resurrect
