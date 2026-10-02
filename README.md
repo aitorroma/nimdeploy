@@ -124,6 +124,44 @@ User services stop when your last session ends and don't start on boot unless
 doesn't allow that to normal users, it tells you so, and an administrator has to
 run `sudo loginctl enable-linger <user>` once.
 
+### System service run by a service account, operated without root
+
+When an admin wants the service as a system unit running as a service account
+(e.g. `deploy`) and a nominal user (e.g. `aitor`) to operate it with the least
+privileges, they run [`contrib/setup-root.sh`](contrib/setup-root.sh) once:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/aitorroma/nimdeploy/main/contrib/setup-root.sh
+sudo bash setup-root.sh --dry-run        # shows every command and file, changes nothing
+sudo bash setup-root.sh --service-user deploy --admin-user aitor \
+     --app-dir /var/www/frontend --app-dir /var/www/backend
+```
+
+It installs nimdeploy and pm2 in the service account's home (verified against
+the release checksums), its config and secrets, the units `nimdeploy.service`
+and `pm2-deploy.service` (`User=deploy`, start on boot), and
+`/etc/sudoers.d/nimdeploy-aitor`: `aitor` may act as `deploy` and
+start/stop/restart/reload those two units, nothing else as root (no
+`systemctl status`/`journalctl`/`edit` through sudo: they open a pager or
+editor as root). `aitor` joins `systemd-journal` to read logs without sudo.
+No service runs `deploy`'s files as root, so acting as `deploy` gives no root.
+It never touches nginx; it only checks for a `/hooks/` location. `--uninstall`
+removes the units and the sudoers file.
+
+Then `aitor` adds each app, with its deploy logic in a script under
+`/home/deploy/bin` (full path: through `sudo -i`, `$VARIABLES` and `~` in
+`--command` would be expanded too early):
+
+```bash
+sudo -iu deploy nimdeploy install --system-service \
+     --repo acme/shop --dir /var/www/shop --command /home/deploy/bin/deploy-shop.sh
+sudo systemctl restart nimdeploy
+journalctl -u nimdeploy -f
+```
+
+Tested on Amazon Linux 2023 with systemd: dry run, install, rerun, deploys
+through signed webhooks, sudo restrictions, reboot, uninstall.
+
 ### As root
 
 Deploys run as the `deploy` user (created if missing). Use another one with

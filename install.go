@@ -28,7 +28,10 @@ var assets embed.FS
 // userPaths are where a user install puts things. Real paths are what the
 // config and messages refer to; files are written under destdir+real.
 type userPaths struct {
-	destdir                                      string
+	destdir string
+	// systemService: the service is a system unit installed by root
+	// (contrib/setup-root.sh); no user unit is written or started.
+	systemService                                bool
 	home, bin, conf, config, secrets, logs, unit string
 }
 
@@ -86,6 +89,7 @@ func cliInstall(args []string) int {
 	fset.StringVar(&q.command, "command", "", "what to run, e.g. ./deploy.sh or \"git pull && npm ci && npm run build\" (bash, stops at the first error)")
 	fset.StringVar(&q.name, "name", "", "deploy name (default: the repository name)")
 	fset.StringVar(&q.listen, "listen", "127.0.0.1:9000", "address nimdeploy listens on, for the reverse proxy")
+	systemService := fset.Bool("system-service", false, "the service is a system unit set up by root (contrib/setup-root.sh): only write the config and secrets, no user service")
 	fset.Usage = func() {
 		fmt.Fprint(fset.Output(), `Usage: nimdeploy install [flags]
 
@@ -111,6 +115,7 @@ Flags:
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	p.systemService = *systemService
 	var quick *quickDeploy
 	if q.repo != "" || q.command != "" {
 		if err := q.complete(); err != nil {
@@ -120,7 +125,7 @@ Flags:
 		quick = &q
 	}
 	live := *destdir == ""
-	if live {
+	if live && !p.systemService {
 		if out, err := exec.Command("systemctl", "--user", "show-environment").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "no systemd user manager (systemctl --user: %s).\nLog in with SSH or a desktop session, not su/sudo, and retry.\n", strings.TrimSpace(string(out)))
 			return 1
@@ -134,7 +139,37 @@ Flags:
 		step("staged under %s", *destdir)
 		return 0
 	}
+	if p.systemService {
+		return reportSystemService(p, quick)
+	}
 	return startAndReport(p, quick)
+}
+
+// reportSystemService finishes an install whose service is a system unit:
+// root restarts it, nothing here touches systemd.
+func reportSystemService(p userPaths, quick *quickDeploy) int {
+	cmd := "nimdeploy"
+	if !slices.Contains(filepath.SplitList(os.Getenv("PATH")), filepath.Dir(p.bin)) {
+		cmd = p.short(p.bin)
+	}
+	if quick != nil {
+		quick.report(p, cmd)
+	}
+	fmt.Println("\nNext steps:")
+	n := 1
+	item := func(format string, args ...any) {
+		fmt.Printf("  %d. %s\n", n, fmt.Sprintf(format, args...))
+		n++
+	}
+	if quick == nil {
+		item("Add deploys: nimdeploy install --system-service --repo owner/repo --dir DIR --command CMD")
+	} else {
+		item("Give the nginx block above to whoever manages nginx (skip it if /hooks/ is already proxied).")
+		item("Create the webhook in %s with the URL and secret above.", quick.provider)
+	}
+	item("Apply it (new secrets are only read on start):  sudo systemctl restart nimdeploy")
+	item("Check it:     %s status\n                   journalctl -u nimdeploy -f", cmd)
+	return 0
 }
 
 // writeUserInstall puts the binary, config, secrets, log dir and unit in
@@ -194,12 +229,19 @@ func writeUserInstall(p userPaths, quick *quickDeploy) (err error) {
 		step("api token generated in %s", p.short(p.secrets))
 	}
 
-	if err := os.MkdirAll(p.at(p.logs), 0o750); err != nil {
-		return err
+	if !p.systemService { // otherwise the system unit's LogsDirectory= holds them
+		if err := os.MkdirAll(p.at(p.logs), 0o750); err != nil {
+			return err
+		}
+		step("logs     %s/<deploy>/", p.short(p.logs))
 	}
-	step("logs     %s/<deploy>/", p.short(p.logs))
 
 	if quick != nil {
+		defer func() {
+			if err == nil && p.systemService && quick.cfg != nil {
+				step("logs     %s/<deploy>/", quick.cfg.Logging.Directory)
+			}
+		}()
 		if err := quick.validate(p); err != nil {
 			if len(quick.cfgDeploys) > 1 {
 				err = fmt.Errorf("%w\n\nThe config already had other deploys that are not ready. Fix them, or start from\nscratch (deletes config, secrets and deploy logs):  nimdeploy uninstall --purge", err)
@@ -208,6 +250,9 @@ func writeUserInstall(p userPaths, quick *quickDeploy) (err error) {
 		}
 	}
 
+	if p.systemService {
+		return nil
+	}
 	unit, _ := assets.ReadFile("deploy/nimdeploy-user.service")
 	if err := os.MkdirAll(filepath.Dir(p.at(p.unit)), 0o755); err != nil {
 		return err
