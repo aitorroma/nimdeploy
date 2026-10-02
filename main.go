@@ -18,13 +18,15 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const usage = `Usage:
   nimdeploy install                     install for the current user, no root needed
                                         (~/.local/bin, ~/.config/nimdeploy, systemd user service)
   nimdeploy uninstall [--purge]         remove a user install
-  nimdeploy [flags]                     run the webhook server
+  nimdeploy [flags] serve               run the webhook server (what the service does;
+                                        also the default without a command and terminal)
   nimdeploy [flags] run [-commit SHA] [-f] <deploy>
                                         start a deploy through the running server
   nimdeploy [flags] status [-json] [deploy]
@@ -81,6 +83,18 @@ func main() {
 	}
 	switch cmd {
 	case "", "serve":
+		// Typed with no command in a terminal, it's almost never meant to
+		// start a second server next to the service: show what to do.
+		// systemd starts it without a terminal; "serve" forces it.
+		if cmd == "" && !*check && isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+			fmt.Printf("nimdeploy %s. The server runs as a service; from a terminal you probably want:\n\n"+
+				"  nimdeploy status            last deploy of each app\n"+
+				"  nimdeploy history           past deploys\n"+
+				"  nimdeploy run -f <deploy>   deploy now and follow the log\n"+
+				"  systemctl status nimdeploy  the service (user installs: systemctl --user status nimdeploy)\n\n"+
+				"Run the server in the foreground with: nimdeploy serve   (all options: nimdeploy -h)\n", version)
+			return
+		}
 		if err := cfg.ResolveSecrets(); err != nil {
 			log.Fatalf("config %s: %v", *configPath, err)
 		}
@@ -248,4 +262,12 @@ func defaultConfigPath() string {
 		}
 	}
 	return "/etc/nimdeploy/config.toml"
+}
+
+// isTerminal reports whether f is a terminal (TCGETS succeeds), unlike
+// /dev/null, which systemd gives services as stdin.
+func isTerminal(f *os.File) bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
 }
