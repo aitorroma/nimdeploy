@@ -55,7 +55,7 @@ sequenceDiagram
 | | |
 |---|---|
 | **One at a time** | One run per deploy (`lock = true`). Different deploys run in parallel. |
-| **Latest push wins** | A push during a run is queued; later pushes replace the queued one, so after a burst only the newest commit is deployed (`queue = true`). With `queue = false` it gets `409`. |
+| **Latest push wins** | A push during a run is queued; later pushes replace the queued one, so after a burst only the newest commit is deployed (`queue = true`). With `queue = false` it gets `409`. For events where each one counts (sales, jobs), `queue_mode = "all"` keeps them all, in order, on disk. |
 | **Exact commit** | The script gets the pushed commit in `DEPLOY_COMMIT`, not "whatever the branch has now". |
 | **Timeout** | 30 minutes by default. On timeout the whole process group gets `SIGTERM`, then `SIGKILL` 10 s later, so no orphan builds keep running. |
 | **No retries** | A failed run is not repeated by itself: fix and push again, or `nimdeploy run`. |
@@ -75,6 +75,9 @@ sequenceDiagram
 | `DEPLOY_COMMIT` | `9f1c2e7…` (empty for `nimdeploy run` without `-commit`) |
 | `DEPLOY_PUSHER` | `ana` |
 | `DEPLOY_DELIVERY` | the provider's delivery ID |
+| `DEPLOY_EVENT`, `DEPLOY_RESOURCE_ID` | non-git events, e.g. `order.updated` and `1234` |
+| `DEPLOY_PAYLOAD_FILE` | generic and WooCommerce: the request body, in a `600` file deleted after the run |
+| `NIMDEPLOY`, `NIMDEPLOY_CONFIG` | nimdeploy's path and config, for scripts that call it (e.g. `woocommerce note`) |
 
 Plus the deploy's own `env` entries, and its [params](guides/generic.md#params)
 (values taken from the webhook's JSON after validation, e.g. `SERVICE=api`). Because `DEPLOY_COMMIT` is empty for a

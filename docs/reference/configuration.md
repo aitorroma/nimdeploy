@@ -70,7 +70,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | Key | Default | |
 |---|---|---|
 | `path` | required | URL path the git host posts to, e.g. `/hooks/shop` |
-| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), or `generic` for any JSON webhook ([details](../guides/generic.md)) |
+| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), `generic` for any JSON webhook ([details](../guides/generic.md)), or `woocommerce` ([details](../guides/woocommerce.md)) |
 | `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored. Optional for `generic` |
 | `branch` | `main` | pushes to other branches are ignored. Not for `generic` |
 | `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
@@ -87,6 +87,12 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `when` | – | table of `"json.path" = value` (or list of values) that must all match; otherwise `200 ignored` |
 | `params` | – | table of values taken from the JSON and passed as environment variables, each validated ([details](../guides/generic.md#params)) |
 | `queue_key` | – | param whose value gets its own lock and queue |
+| `queue_mode` | `latest` (`all` for woocommerce) | `latest`: only the newest waiting run is kept. `all`: every run waits its turn, in order, saved in `queue.json` so a restart resumes them (and runs again one it interrupted) |
+| `queue_max` | `1000` | with `all`: beyond it, `503` |
+| `payload_file` | `true` for generic and woocommerce | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |
+
+WooCommerce adds `store_url`, `webhook_url`, `api_key_env`, `api_secret_env`,
+`topics` and `statuses`: see [WooCommerce](../guides/woocommerce.md#configuration).
 
 Generic webhooks add `auth`, `signature_header`, `timestamp_header`,
 `max_skew`, `token_header`, `delivery_header` and `pusher_from`: see

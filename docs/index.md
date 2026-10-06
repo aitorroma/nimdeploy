@@ -87,6 +87,15 @@ Kubernetes: a VPS, an EC2 instance, a HestiaCP box.
 
     [:octicons-arrow-right-24: Generic webhooks](guides/generic.md)
 
+-   :material-cart-outline:{ .lg } __Deploy from a sale__
+
+    ---
+
+    WooCommerce order paid → your provisioning script runs → the order gets a
+    note and is completed. Set up in one command, nothing lost on restarts.
+
+    [:octicons-arrow-right-24: WooCommerce](guides/woocommerce.md)
+
 -   :material-bell-ring-outline:{ .lg } __Tells you when it breaks__
 
     ---
@@ -110,6 +119,7 @@ nimdeploy runs any command. The release ships tested scripts for common stacks:
 | [`deploy-laravel.sh`](guides/laravel.md#docker-or-host) | Laravel on the host or in Docker Compose (Sail) |
 | [`deploy-pm2.sh`](guides/pm2.md) | Any Node app managed by pm2 |
 | [`run-ansible.sh`](guides/generic.md) | An Ansible playbook with the webhook's params as extra vars |
+| [`provision-woocommerce.sh`](guides/woocommerce.md) | Provision a paid WooCommerce order, idempotent, and report back to the order |
 
 ## At a glance
 

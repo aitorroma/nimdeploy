@@ -37,6 +37,8 @@ const usage = `Usage:
   nimdeploy [flags] history [-n 20] [-json] [deploy]
                                         list past deploys (kept logs), newest first
   nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
+  nimdeploy [flags] woocommerce add|register|status|replay|note
+                                        deploy from WooCommerce events (orders...)
 
 Flags:
 `
@@ -116,6 +118,8 @@ func main() {
 		os.Exit(cliHistory(cfg, *envFile, args))
 	case "nginx":
 		os.Exit(cliNginx(cfg, args))
+	case "woocommerce":
+		os.Exit(cliWooCommerce(cfg, *configPath, *envFile, args))
 	default:
 		flag.Usage()
 		os.Exit(2)

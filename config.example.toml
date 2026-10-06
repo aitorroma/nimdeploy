@@ -92,3 +92,18 @@ timeout = "10m"
 #[deploy.services.params]
 #SERVICE = { from = "service", enum = ["api", "worker"], required = true }
 #VERSION = { from = "release.tag", match = '^v\d+\.\d+\.\d+$', default = "v0.0.0" }
+
+# WooCommerce: run a script for each paid order. Easiest with
+#   nimdeploy woocommerce add -store https://shop... -url https://deploy... -command ...
+# which writes this, stores the API keys and creates the webhooks in the shop.
+#[deploy.orders]
+#provider = "woocommerce"
+#path = "/hooks/orders"
+#store_url = "https://shop.example.com"
+#webhook_url = "https://deploy.example.com/hooks/orders"
+#secret_env = "ORDERS_WEBHOOK_SECRET"
+#api_key_env = "ORDERS_WC_KEY"
+#api_secret_env = "ORDERS_WC_SECRET"
+#topics = ["order.created", "order.updated"]
+#statuses = ["processing", "completed"]
+#command = "/usr/local/bin/provision.sh"   # the order: $DEPLOY_PAYLOAD_FILE, its ID: $DEPLOY_RESOURCE_ID

@@ -95,6 +95,18 @@ func (n *Notifier) Finished(d *DeployConfig, t Trigger, st State, recovered bool
 	}
 }
 
+// Rejected reports a request that will not run (bad params, full queue).
+func (n *Notifier) Rejected(d *DeployConfig, t Trigger, reason string) {
+	if n == nil || !n.shouldNotify(StatusSkipped, false) {
+		return
+	}
+	st := State{Deploy: d.Name, Status: StatusSkipped, Trigger: TriggerWebhook, Repository: d.Repository,
+		Event: t.Event, ResourceID: t.ResourceID, Delivery: t.Delivery, Error: "rejected, not run: " + reason}
+	if err := n.send(st, false, "(no log: it did not run)", nil); err != nil {
+		log.Printf("deploy=%s notification failed: %v", d.Name, err)
+	}
+}
+
 func (n *Notifier) shouldNotify(status string, recovered bool) bool {
 	if n.notify.Format == "" {
 		return false
@@ -155,6 +167,9 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 	}
 	if st.Commit != "" {
 		parts = append(parts, "commit "+shortSHA(st.Commit))
+	}
+	if ref := eventRef(st); ref != "" {
+		parts = append(parts, ref)
 	}
 	if len(st.Params) > 0 {
 		parts = append(parts, formatParams(st.Params))

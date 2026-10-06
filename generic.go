@@ -181,6 +181,16 @@ func extractParams(specs map[string]*ParamConfig, doc any) ([]Param, error) {
 	return params, nil
 }
 
+// applyRules evaluates a deploy's when conditions and params against a
+// decoded payload: a non-empty reason means "ignore it", an error "reject it".
+func applyRules(d *DeployConfig, doc any) (params []Param, reason string, err error) {
+	if reason := matchWhen(d.when, doc); reason != "" {
+		return nil, "when: " + reason, nil
+	}
+	params, err = extractParams(d.Params, doc)
+	return params, "", err
+}
+
 // checkManualParams validates params given to a manual run ("nimdeploy run -p").
 func checkManualParams(specs map[string]*ParamConfig, given map[string]string) ([]Param, error) {
 	for name := range given {

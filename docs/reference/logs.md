@@ -6,7 +6,8 @@
 │   ├── 20260929-125433-51af02.log      # <date>-<time>-<first 6 chars of the delivery ID>
 │   ├── 20260929-131002-c93a11.log
 │   ├── latest.log -> 20260929-131002-c93a11.log
-│   └── status.json                     # last state, survives restarts
+│   ├── status.json                     # last state, survives restarts
+│   └── queue.json                      # queue_mode = "all": waiting and interrupted runs (600)
 └── frontend/
     └── ...
 ```

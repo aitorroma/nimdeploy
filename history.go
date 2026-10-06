@@ -106,6 +106,10 @@ func parseLog(path string) State {
 			st.Pusher = val
 		case "delivery":
 			st.Delivery = val
+		case "event":
+			st.Event = val
+		case "resource_id":
+			st.ResourceID = val
 		default:
 			if name, ok := strings.CutPrefix(key, "param."); ok {
 				st.Params = append(st.Params, Param{Name: name, Value: val})

@@ -227,9 +227,9 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 			status = "waiting (CI)"
 		}
 		if st.Queued != nil {
-			status += " (+1 queued)"
+			status += fmt.Sprintf(" (+%d queued)", max(1, st.Queued.Count))
 		}
-		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", name, status, started, dash(st.Duration), dash(shortSHA(st.Commit)), dash(st.Pusher), dash(st.Log))
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", name, status, started, dash(st.Duration), dash(commitOrEvent(st)), dash(st.Pusher), dash(st.Log))
 		if withParams {
 			line += "\t" + dash(formatParams(st.Params))
 		}
@@ -384,13 +384,32 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 			note = note[:57] + "..."
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", st.Deploy, st.Status, started, dash(st.Duration),
-			dash(st.Trigger), dash(shortSHA(st.Commit)), dash(st.Pusher), dash(st.Log), note)
+			dash(st.Trigger), dash(commitOrEvent(st)), dash(st.Pusher), dash(st.Log), note)
 	}
 	tw.Flush()
 	if len(all) == 0 {
 		fmt.Println("no deploys yet")
 	}
 	return 0
+}
+
+// eventRef is "order.updated #1234" for non-git events.
+func eventRef(st State) string {
+	switch {
+	case st.Event != "" && st.ResourceID != "":
+		return st.Event + " #" + st.ResourceID
+	case st.ResourceID != "":
+		return "#" + st.ResourceID
+	}
+	return st.Event
+}
+
+// commitOrEvent fills the COMMIT column: the commit, or what the event was about.
+func commitOrEvent(st State) string {
+	if st.Commit != "" {
+		return shortSHA(st.Commit)
+	}
+	return eventRef(st)
 }
 
 // paramFlag collects repeated -p NAME=VALUE flags.

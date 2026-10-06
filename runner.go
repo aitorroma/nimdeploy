@@ -36,6 +36,7 @@ const (
 
 	latestLogName = "latest.log"
 	stateFileName = "status.json"
+	queueFileName = "queue.json"
 
 	// killGrace is how long a timed-out deploy gets between SIGTERM and SIGKILL.
 	killGrace = 10 * time.Second
@@ -48,6 +49,7 @@ var (
 	ErrShuttingDown  = errors.New("server is shutting down")
 	ErrDuplicate     = errors.New("delivery already processed")
 	ErrUnknownDeploy = errors.New("unknown deploy")
+	ErrQueueFull     = errors.New("queue is full")
 )
 
 // Trigger describes what started a deploy.
@@ -62,6 +64,11 @@ type Trigger struct {
 	Pusher     string
 	// Params are the values captured from the webhook (or given to a manual run).
 	Params []Param
+	// Event and ResourceID describe non-git events, e.g. "order.updated" and "1234".
+	Event      string `json:",omitempty"`
+	ResourceID string `json:",omitempty"`
+	// Payload is the request body, handed to the command as DEPLOY_PAYLOAD_FILE.
+	Payload []byte `json:",omitempty"`
 	// lane is what the lock and queue apply to: the deploy, or the deploy plus
 	// the value of its queue_key param.
 	lane string
@@ -82,6 +89,8 @@ type State struct {
 	Branch     string      `json:"branch,omitempty"`
 	Commit     string      `json:"commit,omitempty"`
 	Pusher     string      `json:"pusher,omitempty"`
+	Event      string      `json:"event,omitempty"`
+	ResourceID string      `json:"resource_id,omitempty"`
 	Params     []Param     `json:"params,omitempty"`
 	ExitCode   *int        `json:"exit_code,omitempty"`
 	Error      string      `json:"error,omitempty"`
@@ -96,6 +105,8 @@ type QueuedInfo struct {
 	Pusher   string    `json:"pusher,omitempty"`
 	Params   []Param   `json:"params,omitempty"`
 	Since    time.Time `json:"since"`
+	// Count is how many runs are waiting (queue_mode = "all" keeps them all).
+	Count int `json:"count,omitempty"`
 }
 
 // SubmitResult is returned to whoever asked for a deploy.
@@ -126,8 +137,9 @@ type Runner struct {
 	running      map[string]int  // per lane (see Trigger.lane)
 	active       map[string]bool // log files currently being written
 	states       map[string]*State
-	lastFinished map[string]string      // status of the last completed run
-	pending      map[string]*pendingRun // per lane
+	lastFinished map[string]string             // status of the last completed run
+	pending      map[string][]*pendingRun      // per lane, oldest first
+	inflight     map[string]map[string]Trigger // queue_mode "all": running triggers per deploy, by log file
 	seen         *deliveryCache
 }
 
@@ -144,10 +156,14 @@ func NewRunner(cfg *Config, notifier *Notifier) (*Runner, error) {
 		active:       map[string]bool{},
 		states:       map[string]*State{},
 		lastFinished: map[string]string{},
-		pending:      map[string]*pendingRun{},
+		pending:      map[string][]*pendingRun{},
+		inflight:     map[string]map[string]Trigger{},
 		seen:         newDeliveryCache(seenDeliveries),
 	}
 	r.SetConfig(cfg, notifier)
+	r.mu.Lock()
+	r.resumeLocked()
+	r.mu.Unlock()
 	return r, nil
 }
 
@@ -167,6 +183,7 @@ func (r *Runner) SetConfig(cfg *Config, notifier *Notifier) {
 	for _, name := range cfg.DeployNames() {
 		if _, ok := r.states[name]; !ok {
 			r.loadState(name)
+			r.loadQueue(cfg.Deploy[name])
 		}
 	}
 }
@@ -230,14 +247,25 @@ func (r *Runner) Submit(name string, t Trigger) (SubmitResult, error) {
 			return SubmitResult{}, ErrBusy
 		}
 		res := SubmitResult{Result: ResultQueued}
-		if prev := r.pending[t.lane]; prev != nil {
-			res.Replaced = firstNonEmpty(prev.trigger.Commit, formatParams(prev.trigger.Params), prev.trigger.Delivery)
-		}
 		now := time.Now()
-		r.pending[t.lane] = &pendingRun{trigger: t, since: now}
+		run := &pendingRun{trigger: t, since: now}
+		if d.queueAll {
+			if len(r.pending[t.lane]) >= d.QueueMax {
+				return SubmitResult{}, ErrQueueFull
+			}
+			r.pending[t.lane] = append(r.pending[t.lane], run)
+		} else {
+			if prev := r.pending[t.lane]; len(prev) > 0 {
+				p := prev[0].trigger
+				res.Replaced = firstNonEmpty(p.Commit, formatParams(p.Params), p.Delivery)
+			}
+			r.pending[t.lane] = []*pendingRun{run}
+		}
 		st := r.states[name]
-		st.Queued = &QueuedInfo{Commit: t.Commit, Delivery: t.Delivery, Pusher: t.Pusher, Params: t.Params, Since: now.Truncate(time.Second)}
+		st.Queued = &QueuedInfo{Commit: t.Commit, Delivery: t.Delivery, Pusher: t.Pusher, Params: t.Params,
+			Since: now.Truncate(time.Second), Count: r.pendingCountLocked(name)}
 		r.persist(st)
+		r.persistQueue(d)
 		r.seen.add(t.Delivery)
 		res.State = copyState(st)
 		return res, nil
@@ -274,6 +302,8 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 		Branch:     t.Branch,
 		Commit:     t.Commit,
 		Pusher:     t.Pusher,
+		Event:      t.Event,
+		ResourceID: t.ResourceID,
 		Params:     t.Params,
 		Log:        filepath.Base(path),
 	}
@@ -281,8 +311,23 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	r.active[path] = true
 	r.states[d.Name] = st
 	r.persist(st)
+	if d.queueAll {
+		if r.inflight[d.Name] == nil {
+			r.inflight[d.Name] = map[string]Trigger{}
+		}
+		r.inflight[d.Name][st.Log] = t
+		r.persistQueue(d)
+	}
 
 	env := r.commandEnv(d, t)
+	if len(t.Payload) > 0 && d.payloadFile {
+		payload := filepath.Join(filepath.Dir(path), "."+strings.TrimSuffix(st.Log, ".log")+".payload.json")
+		if err := os.WriteFile(payload, t.Payload, 0o600); err != nil {
+			log.Printf("deploy=%s cannot write payload file: %v", d.Name, err)
+		} else {
+			env = append(env, "DEPLOY_PAYLOAD_FILE="+payload)
+		}
+	}
 	notifier := r.notifier
 	retain := r.cfg.Logging.Retain
 
@@ -307,6 +352,12 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	logf("commit=%s", t.Commit)
 	logf("pusher=%s", t.Pusher)
 	logf("delivery=%s", t.Delivery)
+	if t.Event != "" {
+		logf("event=%s", t.Event)
+	}
+	if t.ResourceID != "" {
+		logf("resource_id=%s", t.ResourceID)
+	}
 	for _, p := range t.Params {
 		logf("param.%s=%s", p.Name, p.Value)
 	}
@@ -365,9 +416,16 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 		log.Printf("deploy=%s status=%s duration=%s log=%s", d.Name, status, duration, path)
 	}
 
+	_ = os.Remove(filepath.Join(filepath.Dir(path), "."+strings.TrimSuffix(st.Log, ".log")+".payload.json"))
+
 	r.mu.Lock()
 	r.running[t.lane]--
 	delete(r.active, path)
+	if d.queueAll && errMsg != errShutdownCanceled {
+		// Killed by a shutdown, it stays in queue.json and runs again on start.
+		delete(r.inflight[d.Name], st.Log)
+		r.persistQueue(d)
+	}
 	finishedAt := finished.Truncate(time.Second)
 	st.Status = status
 	st.FinishedAt = &finishedAt
@@ -431,7 +489,7 @@ func (r *Runner) execute(d *DeployConfig, env []string, f *os.File) (status stri
 	}
 	switch {
 	case r.ctx.Err() != nil:
-		errMsg = "canceled: service shutting down"
+		errMsg = errShutdownCanceled
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		errMsg = fmt.Sprintf("timeout after %s", d.Timeout)
 	default:
@@ -452,27 +510,150 @@ func (r *Runner) setStatus(name string, st *State, status string) {
 
 // startPendingLocked runs the lane's queued push, if any. Callers hold r.mu.
 func (r *Runner) startPendingLocked(lane string) {
-	p := r.pending[lane]
-	if p == nil || r.running[lane] > 0 {
+	queue := r.pending[lane]
+	if len(queue) == 0 || r.running[lane] > 0 {
 		return
 	}
-	delete(r.pending, lane)
 	name, _, _ := strings.Cut(lane, laneSep)
-	if st := r.states[name]; st != nil && st.Queued != nil && !r.hasPendingLocked(name) {
-		st.Queued = nil
+	d, ok := r.cfg.Deploy[name]
+	if r.closing && ok && d.queueAll {
+		return // kept in queue.json, runs on the next start
+	}
+	p := queue[0]
+	if len(queue) == 1 {
+		delete(r.pending, lane)
+	} else {
+		r.pending[lane] = queue[1:]
+	}
+	if st := r.states[name]; st != nil && st.Queued != nil {
+		if n := r.pendingCountLocked(name); n == 0 {
+			st.Queued = nil
+		} else {
+			st.Queued.Count = n
+		}
 		r.persist(st)
 	}
+	what := firstNonEmpty(p.trigger.Commit, p.trigger.ResourceID, p.trigger.Delivery)
 	if r.closing {
-		log.Printf("deploy=%s queued commit %s dropped: shutting down", name, p.trigger.Commit)
+		log.Printf("deploy=%s queued run %s dropped: shutting down", name, what)
 		return
 	}
-	d, ok := r.cfg.Deploy[name]
 	if !ok {
-		log.Printf("deploy=%s queued commit %s dropped: deploy removed from config", name, p.trigger.Commit)
+		log.Printf("deploy=%s queued run %s dropped: deploy removed from config", name, what)
 		return
 	}
 	if _, err := r.startLocked(d, p.trigger); err != nil {
-		log.Printf("deploy=%s cannot start queued commit %s: %v", name, p.trigger.Commit, err)
+		log.Printf("deploy=%s cannot start queued run %s: %v", name, what, err)
+		r.persistQueue(d)
+	}
+}
+
+// notifyRejected tells the notification channel about a request that could
+// not run (WooCommerce: an order that will not be retried by the shop).
+func (r *Runner) notifyRejected(d *DeployConfig, t Trigger, reason string) {
+	r.mu.Lock()
+	n := r.notifier
+	r.mu.Unlock()
+	go n.Rejected(d, t, reason)
+}
+
+// pendingCountLocked counts the queued runs of every lane of a deploy.
+func (r *Runner) pendingCountLocked(name string) int {
+	n := 0
+	for lane, q := range r.pending {
+		if lane == name || strings.HasPrefix(lane, name+laneSep) {
+			n += len(q)
+		}
+	}
+	return n
+}
+
+// queueFile is what queue_mode = "all" keeps on disk so nothing is lost on
+// a restart: runs that were interrupted, then the ones waiting.
+type queueFile struct {
+	Interrupted []Trigger `json:"interrupted,omitempty"`
+	Pending     []Trigger `json:"pending,omitempty"`
+}
+
+// persistQueue writes the deploy's queue.json (0600: payloads may hold
+// personal data). Callers hold r.mu.
+func (r *Runner) persistQueue(d *DeployConfig) {
+	if !d.queueAll {
+		return
+	}
+	var q queueFile
+	logs := sortedKeys(r.inflight[d.Name])
+	for _, l := range logs {
+		q.Interrupted = append(q.Interrupted, r.inflight[d.Name][l])
+	}
+	var runs []*pendingRun
+	for lane, p := range r.pending {
+		if lane == d.Name || strings.HasPrefix(lane, d.Name+laneSep) {
+			runs = append(runs, p...)
+		}
+	}
+	sort.SliceStable(runs, func(i, j int) bool { return runs[i].since.Before(runs[j].since) })
+	for _, p := range runs {
+		q.Pending = append(q.Pending, p.trigger)
+	}
+	file := filepath.Join(r.dir, d.Name, queueFileName)
+	if len(q.Interrupted) == 0 && len(q.Pending) == 0 {
+		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("deploy=%s cannot remove %s: %v", d.Name, queueFileName, err)
+		}
+		return
+	}
+	b, err := json.Marshal(q)
+	if err == nil {
+		if err = os.MkdirAll(filepath.Dir(file), 0o750); err == nil {
+			tmp := file + ".tmp"
+			if err = os.WriteFile(tmp, b, 0o600); err == nil {
+				err = os.Rename(tmp, file)
+			}
+		}
+	}
+	if err != nil {
+		log.Printf("deploy=%s cannot persist %s: %v", d.Name, queueFileName, err)
+	}
+}
+
+// loadQueue restores queue.json: interrupted runs go first, so they run again.
+func (r *Runner) loadQueue(d *DeployConfig) {
+	b, err := os.ReadFile(filepath.Join(r.dir, d.Name, queueFileName))
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("deploy=%s cannot read %s: %v", d.Name, queueFileName, err)
+		}
+		return
+	}
+	var q queueFile
+	if err := json.Unmarshal(b, &q); err != nil {
+		log.Printf("deploy=%s cannot parse %s: %v", d.Name, queueFileName, err)
+		return
+	}
+	if !d.queueAll {
+		log.Printf("deploy=%s %s ignored: queue_mode is not \"all\" anymore (%d runs not resumed)", d.Name, queueFileName, len(q.Interrupted)+len(q.Pending))
+		return
+	}
+	now := time.Now()
+	for i, t := range append(q.Interrupted, q.Pending...) {
+		if i < len(q.Interrupted) {
+			log.Printf("deploy=%s run %s was interrupted, running it again", d.Name, firstNonEmpty(t.ResourceID, t.Commit, t.Delivery))
+		}
+		t.lane = laneOf(d, t.Params)
+		// Keep the order: a nanosecond apart.
+		r.pending[t.lane] = append(r.pending[t.lane], &pendingRun{trigger: t, since: now.Add(time.Duration(i))})
+		r.seen.add(t.Delivery)
+	}
+	if n := r.pendingCountLocked(d.Name); n > 0 {
+		log.Printf("deploy=%s resuming %d queued runs", d.Name, n)
+	}
+}
+
+// resumeLocked starts the first queued run of every idle lane.
+func (r *Runner) resumeLocked() {
+	for _, lane := range sortedKeys(r.pending) {
+		r.startPendingLocked(lane)
 	}
 }
 
@@ -489,7 +670,16 @@ func (r *Runner) commandEnv(d *DeployConfig, t Trigger) []string {
 	for _, p := range t.Params {
 		env = append(env, p.Name+"="+p.Value)
 	}
+	if r.cfg.path != "" {
+		// Lets scripts call nimdeploy (e.g. "nimdeploy woocommerce note").
+		env = append(env, "NIMDEPLOY_CONFIG="+r.cfg.path)
+	}
+	if exe, err := os.Executable(); err == nil {
+		env = append(env, "NIMDEPLOY="+exe)
+	}
 	return append(env,
+		"DEPLOY_EVENT="+t.Event,
+		"DEPLOY_RESOURCE_ID="+t.ResourceID,
 		"DEPLOY_NAME="+d.Name,
 		"DEPLOY_TRIGGER="+t.Source,
 		"DEPLOY_PROVIDER="+t.Provider,
@@ -535,6 +725,8 @@ func (r *Runner) Shutdown(grace time.Duration) {
 	}
 	r.cancel()
 }
+
+const errShutdownCanceled = "canceled: service shutting down"
 
 // laneSep separates the deploy name from the queue_key value in a lane.
 const laneSep = "\x00"

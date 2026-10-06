@@ -20,6 +20,7 @@ installer and the history.
 | `server.go` | HTTP endpoints, client IP, API token |
 | `providers.go` | per-provider signature checks and payload parsing |
 | `generic.go` | generic webhooks: auth, `when`, params, JSON paths |
+| `woocommerce.go` | WooCommerce webhooks, REST API client, `nimdeploy woocommerce` |
 | `runner.go` | locking, queue, process groups, log files |
 | `history.go` | history rebuilt from log files |
 | `ci.go` | wait for GitHub Actions |

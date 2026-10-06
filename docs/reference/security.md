@@ -15,6 +15,7 @@ responsibility.
 | Command injection through the payload | The payload is **never** turned into a command or arguments. Only the configured `command` runs; push data reaches it as plain environment variables (`DEPLOY_*`). |
 | Malicious values in params | Only **declared** params reach the command, each checked against its `enum`, `match` or a conservative default pattern, with a length limit; control characters, objects and arrays are refused. Anything invalid: `400`, nothing runs. Names like `PATH`, `LD_*`, `BASH_ENV` or `NODE_OPTIONS` can't be params. |
 | Replay of a generic webhook | Optional signed timestamp (`timestamp_header`, `max_skew`) plus delivery IDs. |
+| Personal data in payloads (e.g. WooCommerce orders) | Never written to logs or notifications; only to `DEPLOY_PAYLOAD_FILE` and `queue.json`, both `600`. Shop API keys are used by the CLI only and removed from the script's environment. |
 | Huge or slow requests | Body capped at 25 MB (`max_body_bytes`); deploys run in the background so requests return immediately. |
 | Flooding with valid pushes | One run at a time per deploy; queued pushes collapse into the latest one. |
 

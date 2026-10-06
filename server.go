@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -156,8 +157,11 @@ func (s *Server) requireToken(mandatory bool, next http.HandlerFunc) http.Handle
 }
 
 func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
-	if d.Provider == providerGeneric {
+	switch d.Provider {
+	case providerGeneric:
 		return s.handleGeneric(d)
+	case providerWooCommerce:
+		return s.handleWooCommerce(d)
 	}
 	p := providers[d.Provider]
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -262,14 +266,18 @@ func (s *Server) handleGeneric(d *DeployConfig) http.HandlerFunc {
 				}
 			}
 		}
-		s.submit(w, d, Trigger{
+		t := Trigger{
 			Source:     TriggerWebhook,
 			Provider:   d.Provider,
 			Delivery:   delivery,
 			Repository: d.Repository,
 			Pusher:     pusher,
 			Params:     params,
-		})
+		}
+		if d.payloadFile {
+			t.Payload = body
+		}
+		s.submit(w, d, t)
 	}
 }
 
@@ -285,14 +293,14 @@ func (s *Server) payloadRules(w http.ResponseWriter, d *DeployConfig, delivery s
 		writeError(w, http.StatusBadRequest, "invalid JSON payload")
 		return nil, false
 	}
-	if reason := matchWhen(d.when, doc); reason != "" {
-		ignore(w, d, delivery, "when: "+reason)
-		return nil, false
-	}
-	params, err := extractParams(d.Params, doc)
-	if err != nil {
+	params, reason, err := applyRules(d, doc)
+	switch {
+	case err != nil:
 		log.Printf("deploy=%s delivery=%s rejected: %v", d.Name, delivery, err)
 		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	case reason != "":
+		ignore(w, d, delivery, reason)
 		return nil, false
 	}
 	return params, true
@@ -302,6 +310,10 @@ type manualRequest struct {
 	Commit string            `json:"commit"`
 	User   string            `json:"user"`
 	Params map[string]string `json:"params,omitempty"`
+	// Payload runs the deploy as if this body had arrived in a webhook
+	// (when/params/statuses apply); "nimdeploy woocommerce replay" uses it.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Event   string          `json:"event,omitempty"`
 }
 
 func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
@@ -311,7 +323,7 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req manualRequest
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "cannot read body")
 		return
@@ -325,20 +337,46 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 	if req.User == "" {
 		req.User = "api"
 	}
-	params, err := checkManualParams(d.Params, req.Params)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	t := Trigger{
 		Source:     TriggerManual,
 		Provider:   d.Provider,
 		Repository: d.Repository,
 		Commit:     req.Commit,
 		Pusher:     req.User,
-		Params:     params,
+		Event:      req.Event,
 	}
-	if d.Provider != providerGeneric {
+	if len(req.Payload) > 0 {
+		if len(req.Params) > 0 {
+			writeError(w, http.StatusBadRequest, "send params or payload, not both")
+			return
+		}
+		doc, err := decodeJSON(req.Payload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON payload")
+			return
+		}
+		params, reason, err := applyRules(d, doc)
+		switch {
+		case err != nil:
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		case reason != "":
+			ignore(w, d, "", reason)
+			return
+		}
+		t.Params, t.ResourceID = params, resourceID(doc)
+		if d.payloadFile {
+			t.Payload = req.Payload
+		}
+	} else {
+		params, err := checkManualParams(d.Params, req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		t.Params = params
+	}
+	if d.Provider != providerGeneric && d.Provider != providerWooCommerce {
 		t.Ref, t.Branch = "refs/heads/"+d.Branch, d.Branch
 	}
 	s.submit(w, d, t)
@@ -354,6 +392,10 @@ func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrShuttingDown):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, ErrQueueFull):
+		log.Printf("deploy=%s delivery=%s rejected: queue full (queue_max %d)", d.Name, t.Delivery, d.QueueMax)
+		s.runner.notifyRejected(d, t, fmt.Sprintf("queue full (queue_max %d)", d.QueueMax))
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, ErrUnknownDeploy):
 		writeError(w, http.StatusNotFound, err.Error())
 	case err != nil:
@@ -361,7 +403,15 @@ func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {
 		writeError(w, http.StatusInternalServerError, "cannot start deploy")
 	default:
 		if res.Result == ResultQueued {
-			log.Printf("deploy=%s status=queued trigger=%s delivery=%s commit=%s replaced=%s", d.Name, t.Source, t.Delivery, t.Commit, res.Replaced)
+			what := "commit=" + t.Commit
+			if t.Commit == "" {
+				what = "run=" + strings.ReplaceAll(firstNonEmpty(eventRef(State{Event: t.Event, ResourceID: t.ResourceID}), formatParams(t.Params), "-"), " ", "_")
+			}
+			msg := fmt.Sprintf("deploy=%s status=queued trigger=%s delivery=%s %s waiting=%d", d.Name, t.Source, t.Delivery, what, max(1, res.State.Queued.Count))
+			if res.Replaced != "" {
+				msg += " replaced=" + res.Replaced
+			}
+			log.Print(msg)
 		}
 		writeJSON(w, http.StatusAccepted, res)
 	}

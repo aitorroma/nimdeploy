@@ -107,13 +107,13 @@ func (r *Runner) waitForCI(d *DeployConfig, t Trigger, n *Notifier, logf func(st
 	last := ""
 	for {
 		if r.ctx.Err() != nil {
-			return false, "canceled: service shutting down", false
+			return false, errShutdownCanceled, false
 		}
 		r.mu.Lock()
 		p := r.pending[t.lane]
 		r.mu.Unlock()
-		if p != nil {
-			return false, "superseded by a newer push (" + shortSHA(p.trigger.Commit) + ")", true
+		if len(p) > 0 {
+			return false, "superseded by a newer push (" + shortSHA(p[len(p)-1].trigger.Commit) + ")", true
 		}
 
 		done, passed, summary, err := n.ciState(r.ctx, t.Repository, t.Commit, d.WaitForCI)

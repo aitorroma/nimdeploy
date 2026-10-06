@@ -35,6 +35,8 @@ type Config struct {
 	Notify  NotifyConfig             `toml:"notify"`
 	GitHub  GitHubConfig             `toml:"github"`
 	Deploy  map[string]*DeployConfig `toml:"deploy"`
+
+	path string // where it was loaded from, for scripts that call nimdeploy
 }
 
 type ServerConfig struct {
@@ -132,13 +134,30 @@ type DeployConfig struct {
 	DeliveryHeader  string   `toml:"delivery_header"` // unique ID per request, to drop duplicates
 	PusherFrom      string   `toml:"pusher_from"`     // JSON path of who triggered it, for logs
 
+	// WooCommerce (see woocommerce.go).
+	StoreURL     string   `toml:"store_url"`      // the shop; also checked against X-WC-Webhook-Source
+	WebhookURL   string   `toml:"webhook_url"`    // public URL of this hook, as the shop calls it (register)
+	APIKeyEnv    string   `toml:"api_key_env"`    // REST API consumer key, for the CLI (register, replay, note)
+	APISecretEnv string   `toml:"api_secret_env"` // REST API consumer secret
+	Topics       []string `toml:"topics"`         // e.g. order.created, order.updated
+	Statuses     []string `toml:"statuses"`       // order statuses that run, e.g. processing, completed
+
 	// Any provider: run only when the JSON matches, and pass declared values on.
 	When     map[string]any          `toml:"when"`
 	Params   map[string]*ParamConfig `toml:"params"`
 	QueueKey string                  `toml:"queue_key"` // param that gives each value its own lock and queue
+	// QueueMode "latest" (default for git) keeps only the newest waiting run;
+	// "all" (default for woocommerce) keeps every one, in order, on disk.
+	QueueMode   string `toml:"queue_mode"`
+	QueueMax    int    `toml:"queue_max"`
+	PayloadFile *bool  `toml:"payload_file"` // pass the request body as DEPLOY_PAYLOAD_FILE
 
-	when       []whenCond
-	pusherPath []pathStep
+	when        []whenCond
+	pusherPath  []pathStep
+	queueAll    bool
+	payloadFile bool
+	apiKey      string
+	apiSecret   string
 
 	secret    []byte
 	lock      bool
@@ -198,6 +217,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		cfg.path = abs
 	}
 	return cfg, nil
 }
@@ -324,10 +346,10 @@ func (d *DeployConfig) validate() error {
 	if d.Provider == "" {
 		d.Provider = "github"
 	}
-	if _, ok := providers[d.Provider]; !ok && d.Provider != providerGeneric {
-		return fmt.Errorf("provider must be one of: %s, %s", strings.Join(providerNames(), ", "), providerGeneric)
+	if _, ok := providers[d.Provider]; !ok && d.Provider != providerGeneric && d.Provider != providerWooCommerce {
+		return fmt.Errorf("provider must be one of: %s, %s, %s", strings.Join(providerNames(), ", "), providerGeneric, providerWooCommerce)
 	}
-	if err := d.validateGeneric(); err != nil {
+	if err := d.validateProvider(); err != nil {
 		return err
 	}
 	if d.SecretEnv == "" {
@@ -386,6 +408,33 @@ func (d *DeployConfig) validate() error {
 	if d.when, err = parseWhen(d.When); err != nil {
 		return err
 	}
+	if len(d.Statuses) > 0 {
+		c := whenCond{from: "status", path: []pathStep{{key: "status", index: -1}}, values: d.Statuses}
+		d.when = append(d.when, c)
+	}
+	switch d.QueueMode {
+	case "":
+		d.queueAll = d.Provider == providerWooCommerce
+	case "latest":
+	case "all":
+		d.queueAll = true
+	default:
+		return fmt.Errorf("queue_mode must be latest or all")
+	}
+	if d.queueAll && !d.queue {
+		return fmt.Errorf("queue_mode = \"all\" needs queue = true")
+	}
+	if d.QueueMax < 0 {
+		return fmt.Errorf("queue_max must be positive")
+	}
+	if d.QueueMax == 0 {
+		d.QueueMax = defaultQueueMax
+	}
+	if d.PayloadFile != nil {
+		d.payloadFile = *d.PayloadFile
+	} else {
+		d.payloadFile = d.Provider == providerGeneric || d.Provider == providerWooCommerce
+	}
 	if d.QueueKey != "" {
 		if _, ok := d.Params[d.QueueKey]; !ok {
 			return fmt.Errorf("queue_key %s must be one of the params", d.QueueKey)
@@ -397,13 +446,17 @@ func (d *DeployConfig) validate() error {
 	return nil
 }
 
-// validateGeneric checks the settings that differ between git providers,
-// which need a repository and branch, and generic webhooks, which don't.
-func (d *DeployConfig) validateGeneric() error {
+// validateProvider checks the settings that differ between git providers,
+// which need a repository and branch, and generic or WooCommerce webhooks.
+func (d *DeployConfig) validateProvider() error {
 	genericOnly := map[string]bool{
 		"auth": d.Auth != "", "signature_header": d.SignatureHeader != "", "token_header": d.TokenHeader != "",
 		"timestamp_header": d.TimestampHeader != "", "max_skew": d.MaxSkew.Duration != 0,
 		"delivery_header": d.DeliveryHeader != "", "pusher_from": d.PusherFrom != "",
+	}
+	wooOnly := map[string]bool{
+		"store_url": d.StoreURL != "", "webhook_url": d.WebhookURL != "", "api_key_env": d.APIKeyEnv != "", "api_secret_env": d.APISecretEnv != "",
+		"topics": len(d.Topics) > 0, "statuses": len(d.Statuses) > 0,
 	}
 	if d.Provider != providerGeneric {
 		for _, key := range sortedKeys(genericOnly) {
@@ -411,6 +464,18 @@ func (d *DeployConfig) validateGeneric() error {
 				return fmt.Errorf("%s is only for provider = \"generic\"", key)
 			}
 		}
+	}
+	if d.Provider != providerWooCommerce {
+		for _, key := range sortedKeys(wooOnly) {
+			if wooOnly[key] {
+				return fmt.Errorf("%s is only for provider = \"woocommerce\"", key)
+			}
+		}
+	}
+	if d.Provider == providerWooCommerce {
+		return d.validateWooCommerce()
+	}
+	if d.Provider != providerGeneric {
 		if d.Repository == "" {
 			return fmt.Errorf("repository is required")
 		}
@@ -480,6 +545,20 @@ func (c *Config) ResolveSecrets() error {
 			return e
 		}
 		d.secret = []byte(s)
+		if d.APIKeyEnv != "" {
+			v, e := get("deploy."+name+".api_key_env", d.APIKeyEnv)
+			if e != nil {
+				return e
+			}
+			d.apiKey = v
+		}
+		if d.APISecretEnv != "" {
+			v, e := get("deploy."+name+".api_secret_env", d.APISecretEnv)
+			if e != nil {
+				return e
+			}
+			d.apiSecret = v
+		}
 	}
 	if c.Server.APITokenEnv != "" {
 		if c.Server.apiToken, err = get("server.api_token_env", c.Server.APITokenEnv); err != nil {
@@ -519,7 +598,7 @@ func (c *Config) DeployNames() []string {
 func (c *Config) secretEnvNames() []string {
 	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv}
 	for _, d := range c.Deploy {
-		names = append(names, d.SecretEnv)
+		names = append(names, d.SecretEnv, d.APIKeyEnv, d.APISecretEnv)
 	}
 	return names
 }

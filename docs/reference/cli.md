@@ -9,6 +9,7 @@ nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
 nimdeploy [flags] status [-json] [deploy]
 nimdeploy [flags] history [-n 20] [-json] [deploy]
 nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
+nimdeploy [flags] woocommerce add|register|status|replay|note
 ```
 
 | Flag | |
@@ -62,6 +63,18 @@ NIMDEPLOY_SECRET=... nimdeploy send -data '{"service":"api"}' https://example.co
 Signs (or adds the token to) a JSON body and posts it to a
 [generic webhook](../guides/generic.md#nimdeploy-send). Useful from CI jobs,
 Ansible or another server; it reads no config.
+
+## woocommerce
+
+```bash
+nimdeploy woocommerce add -store https://shop.example.com -url https://deploy.example.com -command ./provision.sh
+nimdeploy woocommerce register orders            # create/update the shop's webhooks
+nimdeploy woocommerce status orders [-enable]    # are they active? reactivate
+nimdeploy woocommerce replay orders 1234 | -status processing [-after 2026-10-01]
+nimdeploy woocommerce note orders [-status completed] [-customer] 1234 "text"
+```
+
+See [Deploy from a WooCommerce sale](../guides/woocommerce.md).
 
 ## history
 
