@@ -110,7 +110,7 @@ func (r *Runner) waitForCI(d *DeployConfig, t Trigger, n *Notifier, logf func(st
 			return false, "canceled: service shutting down", false
 		}
 		r.mu.Lock()
-		p := r.pending[d.Name]
+		p := r.pending[t.lane]
 		r.mu.Unlock()
 		if p != nil {
 			return false, "superseded by a newer push (" + shortSHA(p.trigger.Commit) + ")", true

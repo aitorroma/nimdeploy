@@ -22,7 +22,9 @@ curl -fsSL https://nimdeploy.nimbox360.com/install.sh | sh
 
 nimdeploy receives `push` webhooks from **GitHub, Gitea, Forgejo, GitLab or
 Bitbucket**, checks the signature, the repository and the branch, and runs the
-deploy command you configured for that repository. It is the small piece
+deploy command you configured for that repository. It also accepts
+[any signed JSON webhook](guides/generic.md), from Ansible, CI jobs or
+scripts, passing validated values to the command. It is the small piece
 between "git push" and "the new version is live" for servers that are not
 Kubernetes: a VPS, an EC2 instance, a HestiaCP box.
 
@@ -76,6 +78,15 @@ Kubernetes: a VPS, an EC2 instance, a HestiaCP box.
 
     [:octicons-arrow-right-24: Wait for CI](guides/wait-for-ci.md)
 
+-   :material-code-json:{ .lg } __Any webhook, with parameters__
+
+    ---
+
+    Beyond git: let Ansible, CI jobs or scripts trigger deploys with a signed
+    JSON body, and pass validated values (`SERVICE=api`) to your command.
+
+    [:octicons-arrow-right-24: Generic webhooks](guides/generic.md)
+
 -   :material-bell-ring-outline:{ .lg } __Tells you when it breaks__
 
     ---
@@ -98,6 +109,7 @@ nimdeploy runs any command. The release ships tested scripts for common stacks:
 | [`deploy-laravel-frankenphp.sh`](guides/laravel.md#frankenphp) | Laravel on a local port with FrankenPHP under pm2 |
 | [`deploy-laravel.sh`](guides/laravel.md#docker-or-host) | Laravel on the host or in Docker Compose (Sail) |
 | [`deploy-pm2.sh`](guides/pm2.md) | Any Node app managed by pm2 |
+| [`run-ansible.sh`](guides/generic.md) | An Ansible playbook with the webhook's params as extra vars |
 
 ## At a glance
 

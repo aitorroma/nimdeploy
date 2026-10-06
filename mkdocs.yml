@@ -92,6 +92,7 @@ nav:
       - Wait for CI: guides/wait-for-ci.md
       - Notifications and commit statuses: guides/notifications.md
       - Git providers: guides/providers.md
+      - Generic webhooks and Ansible: guides/generic.md
   - Reverse proxy:
       - proxy/index.md
       - nginx: proxy/nginx.md

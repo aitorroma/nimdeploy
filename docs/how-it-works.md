@@ -45,6 +45,11 @@ sequenceDiagram
    `latest.log`, `status.json`, an entry in `nimdeploy history`, a line in the
    journal and, if configured, a notification and a commit status.
 
+!!! tip "Not only git pushes"
+    With `provider = "generic"` any system can trigger a deploy with a JSON
+    body (Ansible, CI, scripts), and declared values are passed to the
+    command: see [Generic webhooks and Ansible](guides/generic.md).
+
 ## Rules every deploy follows
 
 | | |
@@ -71,7 +76,8 @@ sequenceDiagram
 | `DEPLOY_PUSHER` | `ana` |
 | `DEPLOY_DELIVERY` | the provider's delivery ID |
 
-Plus the deploy's own `env` entries. Because `DEPLOY_COMMIT` is empty for a
+Plus the deploy's own `env` entries, and its [params](guides/generic.md#params)
+(values taken from the webhook's JSON after validation, e.g. `SERVICE=api`). Because `DEPLOY_COMMIT` is empty for a
 plain manual run, scripts should fall back to the branch:
 
 ```bash

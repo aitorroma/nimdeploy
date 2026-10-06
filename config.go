@@ -101,7 +101,8 @@ type DeployConfig struct {
 	Name string `toml:"-"`
 
 	// Provider is the git host sending the webhooks: github (default),
-	// gitea, forgejo, gitlab or bitbucket (Cloud and Data Center).
+	// gitea, forgejo, gitlab or bitbucket (Cloud and Data Center); or
+	// generic, for any JSON webhook (see generic.go).
 	Provider   string `toml:"provider"`
 	Path       string `toml:"path"`
 	Repository string `toml:"repository"`
@@ -121,6 +122,23 @@ type DeployConfig struct {
 	Lock      *bool    `toml:"lock"`
 	Queue     *bool    `toml:"queue"`
 	LogOutput *bool    `toml:"log_output"`
+
+	// Generic webhooks: how they authenticate and identify themselves.
+	Auth            string   `toml:"auth"`             // hmac (default) or token
+	SignatureHeader string   `toml:"signature_header"` // hmac: "sha256=<hex>" or "<hex>"
+	TokenHeader     string   `toml:"token_header"`     // token: "Authorization" means "Bearer <token>"
+	TimestampHeader string   `toml:"timestamp_header"` // hmac: signs "<timestamp>.<body>", refuses old requests
+	MaxSkew         Duration `toml:"max_skew"`
+	DeliveryHeader  string   `toml:"delivery_header"` // unique ID per request, to drop duplicates
+	PusherFrom      string   `toml:"pusher_from"`     // JSON path of who triggered it, for logs
+
+	// Any provider: run only when the JSON matches, and pass declared values on.
+	When     map[string]any          `toml:"when"`
+	Params   map[string]*ParamConfig `toml:"params"`
+	QueueKey string                  `toml:"queue_key"` // param that gives each value its own lock and queue
+
+	when       []whenCond
+	pusherPath []pathStep
 
 	secret    []byte
 	lock      bool
@@ -306,14 +324,11 @@ func (d *DeployConfig) validate() error {
 	if d.Provider == "" {
 		d.Provider = "github"
 	}
-	if _, ok := providers[d.Provider]; !ok {
-		return fmt.Errorf("provider must be one of: %s", strings.Join(providerNames(), ", "))
+	if _, ok := providers[d.Provider]; !ok && d.Provider != providerGeneric {
+		return fmt.Errorf("provider must be one of: %s, %s", strings.Join(providerNames(), ", "), providerGeneric)
 	}
-	if d.Repository == "" {
-		return fmt.Errorf("repository is required")
-	}
-	if d.Branch == "" {
-		d.Branch = "main"
+	if err := d.validateGeneric(); err != nil {
+		return err
 	}
 	if d.SecretEnv == "" {
 		return fmt.Errorf("secret_env is required")
@@ -352,6 +367,96 @@ func (d *DeployConfig) validate() error {
 	d.lock = d.Lock == nil || *d.Lock
 	d.queue = d.Queue == nil || *d.Queue
 	d.logOutput = d.LogOutput == nil || *d.LogOutput
+
+	for name, p := range d.Params {
+		if p == nil {
+			return fmt.Errorf("param %s is empty", name)
+		}
+		if err := p.validate(name); err != nil {
+			return err
+		}
+	}
+	for _, kv := range d.Env {
+		key, _, _ := strings.Cut(kv, "=")
+		if _, clash := d.Params[key]; clash {
+			return fmt.Errorf("%s is both an env entry and a param", key)
+		}
+	}
+	var err error
+	if d.when, err = parseWhen(d.When); err != nil {
+		return err
+	}
+	if d.QueueKey != "" {
+		if _, ok := d.Params[d.QueueKey]; !ok {
+			return fmt.Errorf("queue_key %s must be one of the params", d.QueueKey)
+		}
+		if !d.lock {
+			return fmt.Errorf("queue_key needs lock = true")
+		}
+	}
+	return nil
+}
+
+// validateGeneric checks the settings that differ between git providers,
+// which need a repository and branch, and generic webhooks, which don't.
+func (d *DeployConfig) validateGeneric() error {
+	genericOnly := map[string]bool{
+		"auth": d.Auth != "", "signature_header": d.SignatureHeader != "", "token_header": d.TokenHeader != "",
+		"timestamp_header": d.TimestampHeader != "", "max_skew": d.MaxSkew.Duration != 0,
+		"delivery_header": d.DeliveryHeader != "", "pusher_from": d.PusherFrom != "",
+	}
+	if d.Provider != providerGeneric {
+		for _, key := range sortedKeys(genericOnly) {
+			if genericOnly[key] {
+				return fmt.Errorf("%s is only for provider = \"generic\"", key)
+			}
+		}
+		if d.Repository == "" {
+			return fmt.Errorf("repository is required")
+		}
+		if d.Branch == "" {
+			d.Branch = "main"
+		}
+		return nil
+	}
+
+	if d.Branch != "" {
+		return fmt.Errorf("branch does not apply to provider = \"generic\" (use when)")
+	}
+	switch d.Auth {
+	case "", authHMAC:
+		d.Auth = authHMAC
+		if d.TokenHeader != "" {
+			return fmt.Errorf("token_header is for auth = \"token\"")
+		}
+		if d.SignatureHeader == "" {
+			d.SignatureHeader = defaultSignatureHeader
+		}
+	case authToken:
+		if d.SignatureHeader != "" || d.TimestampHeader != "" {
+			return fmt.Errorf("signature_header and timestamp_header are for auth = \"hmac\"")
+		}
+		if d.TokenHeader == "" {
+			d.TokenHeader = defaultTokenHeader
+		}
+	default:
+		return fmt.Errorf("auth must be hmac or token")
+	}
+	if d.MaxSkew.Duration < 0 {
+		return fmt.Errorf("max_skew must be positive")
+	}
+	if d.MaxSkew.Duration == 0 {
+		d.MaxSkew.Duration = defaultMaxSkew
+	}
+	if d.DeliveryHeader == "" {
+		d.DeliveryHeader = defaultDeliveryHeader
+	}
+	if d.PusherFrom != "" {
+		var err error
+		if d.pusherPath, err = parseJSONPath(d.PusherFrom); err != nil {
+			return fmt.Errorf("pusher_from: %w", err)
+		}
+	}
 	return nil
 }
 

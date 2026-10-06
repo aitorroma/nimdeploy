@@ -60,6 +60,11 @@ type Trigger struct {
 	Branch     string
 	Commit     string
 	Pusher     string
+	// Params are the values captured from the webhook (or given to a manual run).
+	Params []Param
+	// lane is what the lock and queue apply to: the deploy, or the deploy plus
+	// the value of its queue_key param.
+	lane string
 }
 
 // State is the last known state of a deploy, exposed on /status and
@@ -77,6 +82,7 @@ type State struct {
 	Branch     string      `json:"branch,omitempty"`
 	Commit     string      `json:"commit,omitempty"`
 	Pusher     string      `json:"pusher,omitempty"`
+	Params     []Param     `json:"params,omitempty"`
 	ExitCode   *int        `json:"exit_code,omitempty"`
 	Error      string      `json:"error,omitempty"`
 	Log        string      `json:"log,omitempty"`
@@ -88,6 +94,7 @@ type QueuedInfo struct {
 	Commit   string    `json:"commit,omitempty"`
 	Delivery string    `json:"delivery,omitempty"`
 	Pusher   string    `json:"pusher,omitempty"`
+	Params   []Param   `json:"params,omitempty"`
 	Since    time.Time `json:"since"`
 }
 
@@ -116,11 +123,11 @@ type Runner struct {
 	notifier     *Notifier
 	secretEnvs   map[string]bool
 	closing      bool
-	running      map[string]int
+	running      map[string]int  // per lane (see Trigger.lane)
 	active       map[string]bool // log files currently being written
 	states       map[string]*State
-	lastFinished map[string]string // status of the last completed run
-	pending      map[string]*pendingRun
+	lastFinished map[string]string      // status of the last completed run
+	pending      map[string]*pendingRun // per lane
 	seen         *deliveryCache
 }
 
@@ -216,19 +223,20 @@ func (r *Runner) Submit(name string, t Trigger) (SubmitResult, error) {
 	if r.seen.has(t.Delivery) {
 		return SubmitResult{}, ErrDuplicate
 	}
+	t.lane = laneOf(d, t.Params)
 
-	if d.lock && r.running[name] > 0 {
+	if d.lock && r.running[t.lane] > 0 {
 		if !d.queue {
 			return SubmitResult{}, ErrBusy
 		}
 		res := SubmitResult{Result: ResultQueued}
-		if prev := r.pending[name]; prev != nil {
-			res.Replaced = prev.trigger.Commit
+		if prev := r.pending[t.lane]; prev != nil {
+			res.Replaced = firstNonEmpty(prev.trigger.Commit, formatParams(prev.trigger.Params), prev.trigger.Delivery)
 		}
 		now := time.Now()
-		r.pending[name] = &pendingRun{trigger: t, since: now}
+		r.pending[t.lane] = &pendingRun{trigger: t, since: now}
 		st := r.states[name]
-		st.Queued = &QueuedInfo{Commit: t.Commit, Delivery: t.Delivery, Pusher: t.Pusher, Since: now.Truncate(time.Second)}
+		st.Queued = &QueuedInfo{Commit: t.Commit, Delivery: t.Delivery, Pusher: t.Pusher, Params: t.Params, Since: now.Truncate(time.Second)}
 		r.persist(st)
 		r.seen.add(t.Delivery)
 		res.State = copyState(st)
@@ -266,9 +274,10 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 		Branch:     t.Branch,
 		Commit:     t.Commit,
 		Pusher:     t.Pusher,
+		Params:     t.Params,
 		Log:        filepath.Base(path),
 	}
-	r.running[d.Name]++
+	r.running[t.lane]++
 	r.active[path] = true
 	r.states[d.Name] = st
 	r.persist(st)
@@ -298,6 +307,9 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	logf("commit=%s", t.Commit)
 	logf("pusher=%s", t.Pusher)
 	logf("delivery=%s", t.Delivery)
+	for _, p := range t.Params {
+		logf("param.%s=%s", p.Name, p.Value)
+	}
 	logf("command=%s", strings.Join(append([]string{d.Command}, d.Args...), " "))
 	if d.WorkingDirectory != "" {
 		logf("working_directory=%s", d.WorkingDirectory)
@@ -354,7 +366,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 
 	r.mu.Lock()
-	r.running[d.Name]--
+	r.running[t.lane]--
 	delete(r.active, path)
 	finishedAt := finished.Truncate(time.Second)
 	st.Status = status
@@ -376,7 +388,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	if err := pruneLogs(filepath.Dir(path), retain, r.active); err != nil {
 		log.Printf("deploy=%s cannot prune logs: %v", d.Name, err)
 	}
-	r.startPendingLocked(d.Name)
+	r.startPendingLocked(t.lane)
 	final := copyState(st)
 	final.Queued = nil
 	r.mu.Unlock()
@@ -438,14 +450,15 @@ func (r *Runner) setStatus(name string, st *State, status string) {
 	}
 }
 
-// startPendingLocked runs the queued push, if any. Callers hold r.mu.
-func (r *Runner) startPendingLocked(name string) {
-	p := r.pending[name]
-	if p == nil || r.running[name] > 0 {
+// startPendingLocked runs the lane's queued push, if any. Callers hold r.mu.
+func (r *Runner) startPendingLocked(lane string) {
+	p := r.pending[lane]
+	if p == nil || r.running[lane] > 0 {
 		return
 	}
-	delete(r.pending, name)
-	if st := r.states[name]; st != nil && st.Queued != nil {
+	delete(r.pending, lane)
+	name, _, _ := strings.Cut(lane, laneSep)
+	if st := r.states[name]; st != nil && st.Queued != nil && !r.hasPendingLocked(name) {
 		st.Queued = nil
 		r.persist(st)
 	}
@@ -473,6 +486,9 @@ func (r *Runner) commandEnv(d *DeployConfig, t Trigger) []string {
 		env = append(env, kv)
 	}
 	env = append(env, d.Env...)
+	for _, p := range t.Params {
+		env = append(env, p.Name+"="+p.Value)
+	}
 	return append(env,
 		"DEPLOY_NAME="+d.Name,
 		"DEPLOY_TRIGGER="+t.Source,
@@ -520,6 +536,28 @@ func (r *Runner) Shutdown(grace time.Duration) {
 	r.cancel()
 }
 
+// laneSep separates the deploy name from the queue_key value in a lane.
+const laneSep = "\x00"
+
+// laneOf is what the lock and the queue apply to: the whole deploy, or with
+// queue_key one lane per value ("restart api" doesn't replace "restart web").
+func laneOf(d *DeployConfig, params []Param) string {
+	if d.QueueKey == "" {
+		return d.Name
+	}
+	return d.Name + laneSep + paramValue(params, d.QueueKey)
+}
+
+// hasPendingLocked reports whether any lane of the deploy has a queued run.
+func (r *Runner) hasPendingLocked(name string) bool {
+	for lane := range r.pending {
+		if lane == name || strings.HasPrefix(lane, name+laneSep) {
+			return true
+		}
+	}
+	return false
+}
+
 func initialStatus(d *DeployConfig, t Trigger) string {
 	if needsCI(d, t) {
 		return StatusWaiting
@@ -534,8 +572,10 @@ func copyState(st *State) State {
 	c := *st
 	if st.Queued != nil {
 		q := *st.Queued
+		q.Params = append([]Param(nil), st.Queued.Params...)
 		c.Queued = &q
 	}
+	c.Params = append([]Param(nil), st.Params...)
 	return c
 }
 

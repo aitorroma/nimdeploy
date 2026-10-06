@@ -146,10 +146,23 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 	default:
 		fmt.Fprintf(&b, "❌ %s deploy FAILED on %s\n", st.Deploy, n.host)
 	}
-	fmt.Fprintf(&b, "%s@%s", st.Repository, st.Branch)
-	if st.Commit != "" {
-		fmt.Fprintf(&b, " · commit %s", shortSHA(st.Commit))
+	var parts []string
+	switch {
+	case st.Repository != "" && st.Branch != "":
+		parts = append(parts, st.Repository+"@"+st.Branch)
+	case st.Repository != "":
+		parts = append(parts, st.Repository)
 	}
+	if st.Commit != "" {
+		parts = append(parts, "commit "+shortSHA(st.Commit))
+	}
+	if len(st.Params) > 0 {
+		parts = append(parts, formatParams(st.Params))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, st.Trigger)
+	}
+	b.WriteString(strings.Join(parts, " · "))
 	if st.Pusher != "" {
 		fmt.Fprintf(&b, " · by %s", st.Pusher)
 	}

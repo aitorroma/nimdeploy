@@ -65,8 +65,14 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			return
 		}
 		log.Printf("http %s %s status=%d client=%s delivery=%s duration=%s",
-			r.Method, r.URL.Path, rec.status, s.clientIP(r), r.Header.Get("X-GitHub-Delivery"), formatDuration(time.Since(start)))
+			r.Method, r.URL.Path, rec.status, s.clientIP(r), deliveryID(r), formatDuration(time.Since(start)))
 	})
+}
+
+// deliveryID is the request's delivery ID under any provider's header name.
+func deliveryID(r *http.Request) string {
+	return firstHeader(r, "X-GitHub-Delivery", "X-Forgejo-Delivery", "X-Gitea-Delivery", "X-Gitlab-Event-UUID",
+		"X-Request-UUID", defaultDeliveryHeader, "X-Request-ID")
 }
 
 // clientIP returns the address of whoever sent the request. Forwarding
@@ -150,6 +156,9 @@ func (s *Server) requireToken(mandatory bool, next http.HandlerFunc) http.Handle
 }
 
 func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
+	if d.Provider == providerGeneric {
+		return s.handleGeneric(d)
+	}
 	p := providers[d.Provider]
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
@@ -205,6 +214,10 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			ignore(w, d, ev.Delivery, "branch deleted")
 			return
 		}
+		params, ok := s.payloadRules(w, d, ev.Delivery, body)
+		if !ok {
+			return
+		}
 
 		s.submit(w, d, Trigger{
 			Source:     TriggerWebhook,
@@ -215,13 +228,80 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			Branch:     d.Branch,
 			Commit:     match.Commit,
 			Pusher:     ev.Pusher,
+			Params:     params,
 		})
 	}
 }
 
+// handleGeneric serves provider = "generic": any authenticated JSON POST,
+// filtered by when, with its data reaching the command only as params.
+func (s *Server) handleGeneric(d *DeployConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
+		if err != nil {
+			writeError(w, http.StatusRequestEntityTooLarge, "cannot read body")
+			return
+		}
+		if err := verifyGeneric(d, r, body, time.Now()); err != nil {
+			log.Printf("deploy=%s rejected: %v from %s", d.Name, err, s.clientIP(r))
+			writeError(w, http.StatusUnauthorized, "invalid signature or token")
+			return
+		}
+		delivery := firstHeader(r, d.DeliveryHeader, "X-Request-ID")
+		params, ok := s.payloadRules(w, d, delivery, body)
+		if !ok {
+			return
+		}
+		pusher := ""
+		if d.pusherPath != nil {
+			if doc, err := decodeJSON(body); err == nil {
+				if v, found := lookupJSON(doc, d.pusherPath); found {
+					if str, ok := scalarString(v); ok && defaultParamMatch.MatchString(str) {
+						pusher = truncate(str, 64)
+					}
+				}
+			}
+		}
+		s.submit(w, d, Trigger{
+			Source:     TriggerWebhook,
+			Provider:   d.Provider,
+			Delivery:   delivery,
+			Repository: d.Repository,
+			Pusher:     pusher,
+			Params:     params,
+		})
+	}
+}
+
+// payloadRules applies a deploy's when conditions and extracts its params.
+// It answers the request itself (200 ignored, 400 invalid) when it returns false.
+func (s *Server) payloadRules(w http.ResponseWriter, d *DeployConfig, delivery string, body []byte) ([]Param, bool) {
+	if len(d.when) == 0 && len(d.Params) == 0 {
+		return nil, true
+	}
+	doc, err := decodeJSON(body)
+	if err != nil {
+		log.Printf("deploy=%s delivery=%s rejected: invalid JSON: %v", d.Name, delivery, err)
+		writeError(w, http.StatusBadRequest, "invalid JSON payload")
+		return nil, false
+	}
+	if reason := matchWhen(d.when, doc); reason != "" {
+		ignore(w, d, delivery, "when: "+reason)
+		return nil, false
+	}
+	params, err := extractParams(d.Params, doc)
+	if err != nil {
+		log.Printf("deploy=%s delivery=%s rejected: %v", d.Name, delivery, err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	return params, true
+}
+
 type manualRequest struct {
-	Commit string `json:"commit"`
-	User   string `json:"user"`
+	Commit string            `json:"commit"`
+	User   string            `json:"user"`
+	Params map[string]string `json:"params,omitempty"`
 }
 
 func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
@@ -245,15 +325,23 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 	if req.User == "" {
 		req.User = "api"
 	}
-	s.submit(w, d, Trigger{
+	params, err := checkManualParams(d.Params, req.Params)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	t := Trigger{
 		Source:     TriggerManual,
 		Provider:   d.Provider,
 		Repository: d.Repository,
-		Ref:        "refs/heads/" + d.Branch,
-		Branch:     d.Branch,
 		Commit:     req.Commit,
 		Pusher:     req.User,
-	})
+		Params:     params,
+	}
+	if d.Provider != providerGeneric {
+		t.Ref, t.Branch = "refs/heads/"+d.Branch, d.Branch
+	}
+	s.submit(w, d, t)
 }
 
 func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {

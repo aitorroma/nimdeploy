@@ -13,6 +13,8 @@ responsibility.
 | A push from another repository or branch | `repository` and `branch` must match the config; anything else is ignored. |
 | Replaying a captured delivery | Duplicate delivery IDs are ignored; deploys use the commit from the signed payload, so a replay can at most redeploy that same commit. |
 | Command injection through the payload | The payload is **never** turned into a command or arguments. Only the configured `command` runs; push data reaches it as plain environment variables (`DEPLOY_*`). |
+| Malicious values in params | Only **declared** params reach the command, each checked against its `enum`, `match` or a conservative default pattern, with a length limit; control characters, objects and arrays are refused. Anything invalid: `400`, nothing runs. Names like `PATH`, `LD_*`, `BASH_ENV` or `NODE_OPTIONS` can't be params. |
+| Replay of a generic webhook | Optional signed timestamp (`timestamp_header`, `max_skew`) plus delivery IDs. |
 | Huge or slow requests | Body capped at 25 MB (`max_body_bytes`); deploys run in the background so requests return immediately. |
 | Flooding with valid pushes | One run at a time per deploy; queued pushes collapse into the latest one. |
 
@@ -73,6 +75,14 @@ root (admins)         installs once; owns nginx, PHP-FPM, certificates
 | app directories | service account, team group | `2775` (setgid) |
 | Laravel `.env` | service account, PHP-FPM group | `640` |
 | `storage/`, `bootstrap/cache/` | shared through the PHP-FPM group | group-writable, PHP-FPM with `UMask=0002` |
+
+## Params in your scripts
+
+Validated params are still input from outside. In scripts, always quote them
+(`"$SERVICE"`), never `eval` them or build shell strings with them, and pass
+them to tools as single arguments or as data (e.g. Ansible JSON extra vars,
+as [`run-ansible.sh`](https://github.com/aitorroma/nimdeploy/blob/main/deploy/examples/run-ansible.sh)
+does). Prefer `enum` over `match` when the set of values is known.
 
 ## What stays your responsibility
 

@@ -70,9 +70,9 @@ One table per deploy. The name is used in the CLI, the log directory and
 | Key | Default | |
 |---|---|---|
 | `path` | required | URL path the git host posts to, e.g. `/hooks/shop` |
-| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)) |
-| `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored |
-| `branch` | `main` | pushes to other branches are ignored |
+| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), or `generic` for any JSON webhook ([details](../guides/generic.md)) |
+| `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored. Optional for `generic` |
+| `branch` | `main` | pushes to other branches are ignored. Not for `generic` |
 | `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
 | `command` | required | run directly, no shell |
 | `args` | – | arguments; for an inline script use `command = "/bin/bash"`, `args = ["-c", "..."]` |
@@ -84,6 +84,13 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `log_output` | `true` | `false` keeps only the header and footer lines in the log |
 | `wait_for_ci` | – | GitHub Actions workflow names that must pass first ([details](../guides/wait-for-ci.md)) |
 | `ci_timeout` | `30m` | |
+| `when` | – | table of `"json.path" = value` (or list of values) that must all match; otherwise `200 ignored` |
+| `params` | – | table of values taken from the JSON and passed as environment variables, each validated ([details](../guides/generic.md#params)) |
+| `queue_key` | – | param whose value gets its own lock and queue |
+
+Generic webhooks add `auth`, `signature_header`, `timestamp_header`,
+`max_skew`, `token_header`, `delivery_header` and `pusher_from`: see
+[Generic webhooks](../guides/generic.md#reference).
 
 ## Example
 

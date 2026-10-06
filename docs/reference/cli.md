@@ -3,8 +3,9 @@
 ```text
 nimdeploy install                     install for the current user, no root needed
 nimdeploy uninstall [--purge]         remove a user install
+nimdeploy send [flags] <url>          POST a signed JSON body to a generic webhook (no config needed)
 nimdeploy [flags] serve               run the webhook server (what the service does)
-nimdeploy [flags] run [-commit SHA] [-f] <deploy>
+nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
 nimdeploy [flags] status [-json] [deploy]
 nimdeploy [flags] history [-n 20] [-json] [deploy]
 nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
@@ -45,11 +46,22 @@ frontend  success              2026-09-29 13:10:02  1m12s     c93a11f  ana  2026
 nimdeploy run agency                  # deploy the branch head
 nimdeploy run -commit 9f1c2e7 agency  # a specific commit
 nimdeploy run -f agency               # follow the log; exit code 1 if it fails
+nimdeploy run -p SERVICE=api services # params, validated like the webhook's
 ```
 
 Manual runs go through the same lock and queue as webhooks, don't wait for
 CI, and appear as `manual` in the history. Use it after creating a missing
 `.env`, to redeploy after fixing something on the server, or to retry.
+
+## send
+
+```bash
+NIMDEPLOY_SECRET=... nimdeploy send -data '{"service":"api"}' https://example.com/hooks/services
+```
+
+Signs (or adds the token to) a JSON body and posts it to a
+[generic webhook](../guides/generic.md#nimdeploy-send). Useful from CI jobs,
+Ansible or another server; it reads no config.
 
 ## history
 

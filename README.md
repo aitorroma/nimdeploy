@@ -32,6 +32,9 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
 - **No root**: user service, or a system unit run by a service account that a
   named operator controls with a minimal sudoers rule
   ([`contrib/setup-root.sh`](contrib/setup-root.sh)).
+- **Any webhook, with parameters**: Ansible, CI jobs or scripts can trigger a
+  deploy with a signed JSON body; declared values (`SERVICE=api`) are validated
+  and passed to the command. `nimdeploy send` signs and posts for you.
 - **Wait for CI** (GitHub Actions) and ✅/❌ **commit statuses**.
 - **Notifications** to Slack, Discord, Telegram or any URL, failures and recoveries.
 - **Behind any proxy**: nginx, HestiaCP, Caddy, Traefik, Cloudflare (proxied or Tunnel), unix socket.
@@ -56,6 +59,7 @@ In [`deploy/examples/`](deploy/examples), shipped with every release:
 | [`deploy-laravel-frankenphp.sh`](deploy/examples/deploy-laravel-frankenphp.sh) | Laravel on a local port with FrankenPHP under pm2 |
 | [`deploy-laravel.sh`](deploy/examples/deploy-laravel.sh) | Laravel on the host or in Docker Compose (Sail) |
 | [`deploy-pm2.sh`](deploy/examples/deploy-pm2.sh) | Any Node app managed by pm2 |
+| [`run-ansible.sh`](deploy/examples/run-ansible.sh) | An Ansible playbook with the webhook's params as JSON extra vars |
 
 ## Documentation
 
@@ -64,7 +68,7 @@ In [`deploy/examples/`](deploy/examples), shipped with every release:
 | [Quick start](https://nimdeploy.nimbox360.com/getting-started/) | from nothing to "a push deploys my app" |
 | [How it works](https://nimdeploy.nimbox360.com/how-it-works/) | checks, queue, what the script receives |
 | [Install](https://nimdeploy.nimbox360.com/install/) | without root, service account + operator, as root |
-| [Guides](https://nimdeploy.nimbox360.com/guides/nuxt/) | Nuxt, Laravel, pm2, wait for CI, notifications, git providers |
+| [Guides](https://nimdeploy.nimbox360.com/guides/nuxt/) | Nuxt, Laravel, pm2, wait for CI, notifications, git providers, generic webhooks and Ansible |
 | [Reverse proxy](https://nimdeploy.nimbox360.com/proxy/) | nginx, HestiaCP, Caddy, Traefik, Cloudflare |
 | [Configuration](https://nimdeploy.nimbox360.com/reference/configuration/) | every option |
 | [Security model](https://nimdeploy.nimbox360.com/reference/security/) | what is protected and how |

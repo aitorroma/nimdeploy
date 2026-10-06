@@ -77,3 +77,18 @@ args = ["-c", "set -euxo pipefail; git pull --ff-only; npm ci; npm run build; pm
 # (e.g. ~/.nvm/versions/node/v22.x/bin). Check with: which pm2
 env = ["NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin"]
 timeout = "10m"
+
+# Any JSON webhook (Ansible, CI jobs, scripts): see the docs, "Generic webhooks".
+# Declared params are validated and passed to the command as env variables.
+#[deploy.services]
+#provider = "generic"
+#path = "/hooks/services"
+#secret_env = "SERVICES_WEBHOOK_SECRET"
+#timestamp_header = "X-Timestamp"   # signed timestamp, refuses replays
+#queue_key = "SERVICE"              # one lock and queue per service
+#command = "/usr/local/bin/deploy-services.sh"
+#[deploy.services.when]
+#action = "deploy"
+#[deploy.services.params]
+#SERVICE = { from = "service", enum = ["api", "worker"], required = true }
+#VERSION = { from = "release.tag", match = '^v\d+\.\d+\.\d+$', default = "v0.0.0" }

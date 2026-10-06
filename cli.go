@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -101,9 +102,11 @@ func cliRun(cfg *Config, envFile string, args []string) int {
 	fset := flag.NewFlagSet("run", flag.ExitOnError)
 	commit := fset.String("commit", "", "commit to deploy (default: the script decides, usually the branch head)")
 	follow := fset.Bool("f", false, "follow the log until the deploy finishes; exit code reflects the result")
+	params := paramFlag{}
+	fset.Var(params, "p", "param for the deploy, NAME=VALUE (repeatable; validated like webhook params)")
 	fset.Parse(args)
 	if fset.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: nimdeploy run [-commit SHA] [-f] <deploy>")
+		fmt.Fprintln(os.Stderr, "usage: nimdeploy run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>")
 		return 2
 	}
 	name := fset.Arg(0)
@@ -122,7 +125,7 @@ func cliRun(cfg *Config, envFile string, args []string) int {
 		user = os.Getenv("USER")
 	}
 	var res SubmitResult
-	if _, err := c.do(http.MethodPost, "/deploy/"+name, manualRequest{Commit: *commit, User: user}, &res); err != nil {
+	if _, err := c.do(http.MethodPost, "/deploy/"+name, manualRequest{Commit: *commit, User: user, Params: params}, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -200,8 +203,16 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 		return 0
 	}
 
+	withParams := false
+	for _, st := range states {
+		withParams = withParams || len(st.Params) > 0
+	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "DEPLOY\tSTATUS\tSTARTED\tDURATION\tCOMMIT\tBY\tLOG")
+	header := "DEPLOY\tSTATUS\tSTARTED\tDURATION\tCOMMIT\tBY\tLOG"
+	if withParams {
+		header += "\tPARAMS"
+	}
+	fmt.Fprintln(tw, header)
 	for _, name := range cfg.DeployNames() {
 		st, ok := states[name]
 		if !ok {
@@ -218,7 +229,11 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 		if st.Queued != nil {
 			status += " (+1 queued)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, status, started, dash(st.Duration), dash(shortSHA(st.Commit)), dash(st.Pusher), dash(st.Log))
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", name, status, started, dash(st.Duration), dash(shortSHA(st.Commit)), dash(st.Pusher), dash(st.Log))
+		if withParams {
+			line += "\t" + dash(formatParams(st.Params))
+		}
+		fmt.Fprintln(tw, line)
 	}
 	tw.Flush()
 	for _, name := range cfg.DeployNames() {
@@ -362,6 +377,9 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 			started = st.StartedAt.Local().Format("2006-01-02 15:04:05")
 		}
 		note := st.Error
+		if note == "" {
+			note = formatParams(st.Params)
+		}
 		if len(note) > 60 {
 			note = note[:57] + "..."
 		}
@@ -373,4 +391,126 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 		fmt.Println("no deploys yet")
 	}
 	return 0
+}
+
+// paramFlag collects repeated -p NAME=VALUE flags.
+type paramFlag map[string]string
+
+func (p paramFlag) String() string { return formatParams(nil) }
+
+func (p paramFlag) Set(v string) error {
+	name, value, ok := strings.Cut(v, "=")
+	if !ok || name == "" {
+		return fmt.Errorf("want NAME=VALUE, got %q", v)
+	}
+	p[name] = value
+	return nil
+}
+
+// cliSend posts a JSON body to a generic webhook, signed or with a token, so
+// Ansible, CI jobs and scripts don't have to compute HMACs themselves. It
+// needs no config: only the URL and the secret.
+func cliSend(args []string) int {
+	fset := flag.NewFlagSet("send", flag.ExitOnError)
+	data := fset.String("data", "", "JSON body, or @file, or @- for stdin (default: {})")
+	secretEnv := fset.String("secret-env", "NIMDEPLOY_SECRET", "environment variable holding the shared secret or token")
+	auth := fset.String("auth", authHMAC, "hmac (sign the body) or token")
+	sigHeader := fset.String("signature-header", defaultSignatureHeader, "header for the HMAC signature")
+	tokenHeader := fset.String("token-header", defaultTokenHeader, `header for the token ("Authorization" sends "Bearer <token>")`)
+	tsHeader := fset.String("timestamp-header", "", "also send the current Unix time in this header and sign it (the deploy's timestamp_header)")
+	deliveryHeader := fset.String("delivery-header", defaultDeliveryHeader, "header with a unique ID for this request (empty: don't send)")
+	timeout := fset.Duration("timeout", 30*time.Second, "request timeout")
+	fset.Usage = func() {
+		fmt.Fprintln(fset.Output(), "usage: nimdeploy send [flags] <url>\n\nPOST a signed JSON body to a nimdeploy generic webhook.\n\nFlags:")
+		fset.PrintDefaults()
+	}
+	fset.Parse(args)
+	if fset.NArg() != 1 {
+		fset.Usage()
+		return 2
+	}
+	url := fset.Arg(0)
+	secret := os.Getenv(*secretEnv)
+	if secret == "" {
+		fmt.Fprintf(os.Stderr, "nimdeploy send: environment variable %s is empty; export the webhook's secret there or use -secret-env\n", *secretEnv)
+		return 2
+	}
+
+	body := []byte(*data)
+	switch {
+	case *data == "":
+		body = []byte("{}")
+	case *data == "@-":
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "nimdeploy send:", err)
+			return 1
+		}
+		body = b
+	case strings.HasPrefix(*data, "@"):
+		b, err := os.ReadFile((*data)[1:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "nimdeploy send:", err)
+			return 1
+		}
+		body = b
+	}
+	if !json.Valid(body) {
+		fmt.Fprintln(os.Stderr, "nimdeploy send: the body is not valid JSON")
+		return 2
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "nimdeploy send:", err)
+		return 2
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "nimdeploy-send/"+version)
+	switch *auth {
+	case authHMAC:
+		ts := ""
+		if *tsHeader != "" {
+			ts = fmt.Sprint(time.Now().Unix())
+			req.Header.Set(*tsHeader, ts)
+		}
+		req.Header.Set(*sigHeader, signGeneric([]byte(secret), body, ts))
+	case authToken:
+		if strings.EqualFold(*tokenHeader, "Authorization") {
+			req.Header.Set("Authorization", "Bearer "+secret)
+		} else {
+			req.Header.Set(*tokenHeader, secret)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "nimdeploy send: -auth must be hmac or token")
+		return 2
+	}
+	if *deliveryHeader != "" {
+		req.Header.Set(*deliveryHeader, newDeliveryID())
+	}
+
+	resp, err := (&http.Client{Timeout: *timeout}).Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "nimdeploy send:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	fmt.Printf("HTTP %d\n%s", resp.StatusCode, out)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		fmt.Println()
+	}
+	if resp.StatusCode/100 != 2 {
+		return 1
+	}
+	return 0
+}
+
+// newDeliveryID returns a random UUID (v4).
+func newDeliveryID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

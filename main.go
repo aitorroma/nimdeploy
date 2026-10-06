@@ -27,7 +27,10 @@ const usage = `Usage:
   nimdeploy uninstall [--purge]         remove a user install
   nimdeploy [flags] serve               run the webhook server (what the service does;
                                         also the default without a command and terminal)
-  nimdeploy [flags] run [-commit SHA] [-f] <deploy>
+  nimdeploy send [-data JSON|@file] [-auth hmac|token] <url>
+                                        POST a signed JSON body to a generic webhook
+                                        (secret in $NIMDEPLOY_SECRET; no config needed)
+  nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
                                         start a deploy through the running server
   nimdeploy [flags] status [-json] [deploy]
                                         show deploy status
@@ -65,6 +68,8 @@ func main() {
 			os.Exit(cliInstall(args[1:]))
 		case "uninstall":
 			os.Exit(cliUninstall(args[1:]))
+		case "send":
+			os.Exit(cliSend(args[1:]))
 		}
 	}
 

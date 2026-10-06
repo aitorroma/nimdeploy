@@ -11,6 +11,7 @@ events, as **JSON**, with the deploy's secret.
 | `gitlab` | `group/subgroup/project` | Settings → Webhooks → Add new webhook, trigger *Push events* | *Secret token* (compared as is, `X-Gitlab-Token`) |
 | `bitbucket` (Cloud) | `workspace/repo` | Repository settings → Webhooks → Add webhook, trigger *Repository: Push* | *Secret* (HMAC, `X-Hub-Signature`) |
 | `bitbucket` (Data Center) | `PROJECT/repo` (project **key**) | Repository settings → Webhooks → Create webhook, event *Repository: Push* | *Secret* (HMAC, `X-Hub-Signature`) |
+| `generic` | optional | anything that can POST JSON | HMAC (`X-Signature`, optional signed timestamp) or token. See [Generic webhooks](generic.md) |
 
 Everything else works the same for all of them: branch filter, deleted
 branches ignored, duplicate deliveries dropped, queue, logs, history,

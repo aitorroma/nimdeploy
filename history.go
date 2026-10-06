@@ -106,6 +106,10 @@ func parseLog(path string) State {
 			st.Pusher = val
 		case "delivery":
 			st.Delivery = val
+		default:
+			if name, ok := strings.CutPrefix(key, "param."); ok {
+				st.Params = append(st.Params, Param{Name: name, Value: val})
+			}
 		}
 	}
 	_ = sc.Err() // a truncated header just leaves fields empty

@@ -19,6 +19,7 @@ installer and the history.
 | `config.go` | config loading, defaults, validation |
 | `server.go` | HTTP endpoints, client IP, API token |
 | `providers.go` | per-provider signature checks and payload parsing |
+| `generic.go` | generic webhooks: auth, `when`, params, JSON paths |
 | `runner.go` | locking, queue, process groups, log files |
 | `history.go` | history rebuilt from log files |
 | `ci.go` | wait for GitHub Actions |
