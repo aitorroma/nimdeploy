@@ -203,12 +203,16 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 		return 0
 	}
 
-	withParams := false
+	withParams, withNext := false, false
 	for _, st := range states {
 		withParams = withParams || len(st.Params) > 0
+		withNext = withNext || st.NextRun != nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	header := "DEPLOY\tSTATUS\tSTARTED\tDURATION\tCOMMIT\tBY\tLOG"
+	if withNext {
+		header += "\tNEXT RUN"
+	}
 	if withParams {
 		header += "\tPARAMS"
 	}
@@ -230,6 +234,13 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 			status += fmt.Sprintf(" (+%d queued)", max(1, st.Queued.Count))
 		}
 		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", name, status, started, dash(st.Duration), dash(commitOrEvent(st)), dash(st.Pusher), dash(st.Log))
+		if withNext {
+			next := "-"
+			if st.NextRun != nil {
+				next = st.NextRun.Local().Format("2006-01-02 15:04:05")
+			}
+			line += "\t" + next
+		}
 		if withParams {
 			line += "\t" + dash(formatParams(st.Params))
 		}
@@ -320,6 +331,9 @@ location %s {
 `, comment, match, upstream, maxMB)
 	}
 	for _, name := range cfg.DeployNames() {
+		if cfg.Deploy[name].Path == "" {
+			continue // scheduled only: no webhook
+		}
 		block("= "+base+cfg.Deploy[name].Path, "deploy."+name)
 	}
 	if api {
@@ -391,6 +405,61 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 		fmt.Println("no deploys yet")
 	}
 	return 0
+}
+
+func cliRollback(cfg *Config, envFile string, args []string) int {
+	fset := flag.NewFlagSet("rollback", flag.ExitOnError)
+	to := fset.String("to", "", "commit to go back to (default: the last successful deploy before the latest one)")
+	follow := fset.Bool("f", false, "follow the log until it finishes; exit code reflects the result")
+	dry := fset.Bool("n", false, "only show which commit it would deploy")
+	fset.Parse(args)
+	if fset.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: nimdeploy rollback [-to SHA] [-n] [-f] <deploy>")
+		return 2
+	}
+	name := fset.Arg(0)
+	if _, ok := cfg.Deploy[name]; !ok {
+		fmt.Fprintf(os.Stderr, "unknown deploy %q (have: %s)\n", name, strings.Join(cfg.DeployNames(), ", "))
+		return 2
+	}
+	c, err := newClient(cfg, envFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *dry {
+		if *to != "" {
+			fmt.Printf("%s: would deploy %s\n", name, *to)
+			return 0
+		}
+		var h []State
+		if _, err := c.do(http.MethodGet, "/history/"+name, nil, &h); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		commit, from, err := rollbackTargetIn(h)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("%s: would deploy %s (deployed successfully by %s)\n", name, commit, from)
+		return 0
+	}
+	user := firstNonEmpty(os.Getenv("SUDO_USER"), os.Getenv("USER"), "cli")
+	var res SubmitResult
+	if _, err := c.do(http.MethodPost, "/rollback/"+name, manualRequest{Commit: *to, User: user}, &res); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("%s: rolling back to %s (%s, log %s)\n", name, shortSHA(res.State.Commit), res.Result, res.State.Log)
+	if res.Result == ResultQueued {
+		fmt.Printf("  queued: it runs after the current deploy (queued commit %s)\n", shortSHA(res.State.Queued.Commit))
+		return 0
+	}
+	if !*follow {
+		return 0
+	}
+	return followLog(c, name, filepath.Join(cfg.Logging.Directory, name, res.State.Log), res.State.Log)
 }
 
 // eventRef is "order.updated #1234" for non-git events.

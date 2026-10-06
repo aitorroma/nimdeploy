@@ -34,6 +34,7 @@ const (
 	defaultDeliveryHeader  = "X-Delivery-ID"
 	defaultMaxSkew         = 5 * time.Minute
 	defaultParamMaxLen     = 256
+	defaultHealthTimeout   = 60 * time.Second
 )
 
 // defaultParamMatch is what a param must look like when it has neither enum

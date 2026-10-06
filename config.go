@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,11 +31,12 @@ func (d *Duration) UnmarshalText(b []byte) error {
 func (d Duration) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
 
 type Config struct {
-	Server  ServerConfig             `toml:"server"`
-	Logging LoggingConfig            `toml:"logging"`
-	Notify  NotifyConfig             `toml:"notify"`
-	GitHub  GitHubConfig             `toml:"github"`
-	Deploy  map[string]*DeployConfig `toml:"deploy"`
+	Server     ServerConfig             `toml:"server"`
+	Logging    LoggingConfig            `toml:"logging"`
+	Notify     NotifyConfig             `toml:"notify"`
+	GitHub     GitHubConfig             `toml:"github"`
+	Cloudflare CloudflareConfig         `toml:"cloudflare"`
+	Deploy     map[string]*DeployConfig `toml:"deploy"`
 
 	path string // where it was loaded from, for scripts that call nimdeploy
 }
@@ -99,6 +101,14 @@ type GitHubConfig struct {
 	commitStatus bool
 }
 
+// CloudflareConfig is the API access for cache purges after a deploy.
+type CloudflareConfig struct {
+	APITokenEnv string `toml:"api_token_env"` // token with Zone → Cache Purge
+	APIURL      string `toml:"api_url"`
+
+	token string
+}
+
 type DeployConfig struct {
 	Name string `toml:"-"`
 
@@ -152,6 +162,28 @@ type DeployConfig struct {
 	QueueMax    int    `toml:"queue_max"`
 	PayloadFile *bool  `toml:"payload_file"` // pass the request body as DEPLOY_PAYLOAD_FILE
 
+	// Payment providers (stripe, paddle, lemonsqueezy): event types that run.
+	Events []string `toml:"events"`
+
+	// Schedule runs the deploy on a cron schedule ("*/15 * * * *", "@daily",
+	// "@every 10m"); a deploy with a schedule and no path has no webhook.
+	Schedule string `toml:"schedule"`
+
+	// Hooks around the command, run with bash in the same directory and log.
+	Before       string `toml:"before"`        // fails → the deploy fails, the command doesn't run
+	AfterSuccess string `toml:"after_success"` // e.g. artisan up, warm caches
+	AfterFailure string `toml:"after_failure"` // e.g. artisan up, page someone
+	// HealthURL is checked after the command; not answering 2xx/3xx within
+	// HealthTimeout makes the deploy fail (and roll back, if enabled).
+	HealthURL     string   `toml:"health_url"`
+	HealthTimeout Duration `toml:"health_timeout"`
+	// RollbackOnFailure deploys the last successful commit when a deploy fails.
+	RollbackOnFailure bool `toml:"rollback_on_failure"`
+	// Cloudflare cache purge after a successful deploy: ["everything"] or URLs.
+	CloudflareZoneID string   `toml:"cloudflare_zone_id"`
+	CloudflarePurge  []string `toml:"cloudflare_purge"`
+
+	schedule    *cronSpec
 	when        []whenCond
 	pusherPath  []pathStep
 	queueAll    bool
@@ -201,6 +233,9 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		GitHub: GitHubConfig{
 			APIURL: "https://api.github.com",
+		},
+		Cloudflare: CloudflareConfig{
+			APIURL: "https://api.cloudflare.com/client/v4",
 		},
 	}
 
@@ -253,6 +288,12 @@ func (c *Config) validate() error {
 		}
 		if len(d.WaitForCI) > 0 && c.GitHub.TokenEnv == "" {
 			return fmt.Errorf("deploy.%s: wait_for_ci needs [github] token_env (a token with Actions: read)", name)
+		}
+		if d.CloudflareZoneID != "" && c.Cloudflare.APITokenEnv == "" {
+			return fmt.Errorf("deploy.%s: cloudflare_purge needs [cloudflare] api_token_env (a token with Zone → Cache Purge)", name)
+		}
+		if d.Path == "" {
+			continue
 		}
 		if other, dup := paths[d.Path]; dup {
 			return fmt.Errorf("deploy.%s: path %s already used by deploy.%s", name, d.Path, other)
@@ -335,25 +376,43 @@ func (d *DeployConfig) validate() error {
 	if !deployNameRe.MatchString(d.Name) {
 		return fmt.Errorf("invalid deploy name (allowed: letters, digits, _ . -)")
 	}
-	if !hookPathRe.MatchString(d.Path) {
-		return fmt.Errorf("path must start with / and contain only letters, digits, / _ . -")
+	if d.Schedule != "" {
+		spec, err := parseCron(d.Schedule)
+		if err != nil {
+			return fmt.Errorf("schedule: %w", err)
+		}
+		d.schedule = spec
 	}
-	for _, reserved := range []string{"/status", "/history", "/deploy", "/healthz"} {
-		if d.Path == reserved || strings.HasPrefix(d.Path, reserved+"/") {
-			return fmt.Errorf("path %s is reserved", d.Path)
+	if d.Path == "" && d.Schedule != "" {
+		// Scheduled only: no webhook, so no provider, secret or repository.
+		if d.Provider != "" && d.Provider != providerSchedule {
+			return fmt.Errorf("provider %s needs a path (a deploy without path only runs on its schedule)", d.Provider)
+		}
+		d.Provider = providerSchedule
+	} else {
+		if !hookPathRe.MatchString(d.Path) {
+			return fmt.Errorf("path must start with / and contain only letters, digits, / _ . - (or set only a schedule)")
+		}
+		for _, reserved := range []string{"/status", "/history", "/deploy", "/rollback", "/healthz", "/metrics"} {
+			if d.Path == reserved || strings.HasPrefix(d.Path, reserved+"/") {
+				return fmt.Errorf("path %s is reserved", d.Path)
+			}
+		}
+		if d.Provider == "" {
+			d.Provider = "github"
+		}
+		if !knownProvider(d.Provider) {
+			return fmt.Errorf("provider must be one of: %s", strings.Join(allProviderNames(), ", "))
+		}
+		if err := d.validateProvider(); err != nil {
+			return err
+		}
+		if d.SecretEnv == "" {
+			return fmt.Errorf("secret_env is required")
 		}
 	}
-	if d.Provider == "" {
-		d.Provider = "github"
-	}
-	if _, ok := providers[d.Provider]; !ok && d.Provider != providerGeneric && d.Provider != providerWooCommerce {
-		return fmt.Errorf("provider must be one of: %s, %s, %s", strings.Join(providerNames(), ", "), providerGeneric, providerWooCommerce)
-	}
-	if err := d.validateProvider(); err != nil {
+	if err := d.validateHooks(); err != nil {
 		return err
-	}
-	if d.SecretEnv == "" {
-		return fmt.Errorf("secret_env is required")
 	}
 	if d.Command == "" {
 		return fmt.Errorf("command is required")
@@ -414,7 +473,7 @@ func (d *DeployConfig) validate() error {
 	}
 	switch d.QueueMode {
 	case "":
-		d.queueAll = d.Provider == providerWooCommerce
+		d.queueAll = d.Provider == providerWooCommerce || paymentProvider(d.Provider)
 	case "latest":
 	case "all":
 		d.queueAll = true
@@ -433,7 +492,7 @@ func (d *DeployConfig) validate() error {
 	if d.PayloadFile != nil {
 		d.payloadFile = *d.PayloadFile
 	} else {
-		d.payloadFile = d.Provider == providerGeneric || d.Provider == providerWooCommerce
+		d.payloadFile = d.Provider == providerGeneric || d.Provider == providerWooCommerce || paymentProvider(d.Provider)
 	}
 	if d.QueueKey != "" {
 		if _, ok := d.Params[d.QueueKey]; !ok {
@@ -458,6 +517,9 @@ func (d *DeployConfig) validateProvider() error {
 		"store_url": d.StoreURL != "", "webhook_url": d.WebhookURL != "", "api_key_env": d.APIKeyEnv != "", "api_secret_env": d.APISecretEnv != "",
 		"topics": len(d.Topics) > 0, "statuses": len(d.Statuses) > 0,
 	}
+	if paymentProvider(d.Provider) {
+		delete(genericOnly, "max_skew") // they sign a timestamp too
+	}
 	if d.Provider != providerGeneric {
 		for _, key := range sortedKeys(genericOnly) {
 			if genericOnly[key] {
@@ -472,8 +534,14 @@ func (d *DeployConfig) validateProvider() error {
 			}
 		}
 	}
+	if !paymentProvider(d.Provider) && len(d.Events) > 0 {
+		return fmt.Errorf("events is only for provider = stripe, paddle or lemonsqueezy")
+	}
 	if d.Provider == providerWooCommerce {
 		return d.validateWooCommerce()
+	}
+	if paymentProvider(d.Provider) {
+		return d.validatePayment()
 	}
 	if d.Provider != providerGeneric {
 		if d.Repository == "" {
@@ -540,11 +608,13 @@ func (c *Config) ResolveSecrets() error {
 	var err error
 	for _, name := range c.DeployNames() {
 		d := c.Deploy[name]
-		s, e := get("deploy."+name+".secret_env", d.SecretEnv)
-		if e != nil {
-			return e
+		if d.SecretEnv != "" {
+			s, e := get("deploy."+name+".secret_env", d.SecretEnv)
+			if e != nil {
+				return e
+			}
+			d.secret = []byte(s)
 		}
-		d.secret = []byte(s)
 		if d.APIKeyEnv != "" {
 			v, e := get("deploy."+name+".api_key_env", d.APIKeyEnv)
 			if e != nil {
@@ -580,6 +650,11 @@ func (c *Config) ResolveSecrets() error {
 			return err
 		}
 	}
+	if c.Cloudflare.APITokenEnv != "" {
+		if c.Cloudflare.token, err = get("cloudflare.api_token_env", c.Cloudflare.APITokenEnv); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -596,9 +671,57 @@ func (c *Config) DeployNames() []string {
 // secretEnvNames lists every env var holding a secret, so they can be kept
 // out of deploy commands.
 func (c *Config) secretEnvNames() []string {
-	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv}
+	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv, c.Cloudflare.APITokenEnv}
 	for _, d := range c.Deploy {
 		names = append(names, d.SecretEnv, d.APIKeyEnv, d.APISecretEnv)
 	}
 	return names
+}
+
+const providerSchedule = "schedule"
+
+func knownProvider(name string) bool {
+	_, git := providers[name]
+	return git || name == providerGeneric || name == providerWooCommerce || paymentProvider(name)
+}
+
+func allProviderNames() []string {
+	names := append(providerNames(), providerGeneric, providerWooCommerce)
+	return append(names, sortedKeys(paymentProviders)...)
+}
+
+// validateHooks checks the settings around the command.
+func (d *DeployConfig) validateHooks() error {
+	if d.HealthURL != "" {
+		u, err := url.Parse(d.HealthURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("health_url must be an http(s) URL")
+		}
+	}
+	if d.HealthTimeout.Duration < 0 {
+		return fmt.Errorf("health_timeout must be positive")
+	}
+	if d.HealthTimeout.Duration == 0 {
+		d.HealthTimeout.Duration = defaultHealthTimeout
+	}
+	if d.RollbackOnFailure {
+		if _, git := providers[d.Provider]; !git {
+			return fmt.Errorf("rollback_on_failure needs a git provider (it redeploys the last good commit)")
+		}
+	}
+	if (d.CloudflareZoneID == "") != (len(d.CloudflarePurge) == 0) {
+		return fmt.Errorf("cloudflare_zone_id and cloudflare_purge go together")
+	}
+	for _, p := range d.CloudflarePurge {
+		if p == "everything" {
+			if len(d.CloudflarePurge) > 1 {
+				return fmt.Errorf("cloudflare_purge: \"everything\" goes alone")
+			}
+			continue
+		}
+		if u, err := url.Parse(p); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("cloudflare_purge: %q is not \"everything\" or a full URL", p)
+		}
+	}
+	return nil
 }

@@ -21,12 +21,15 @@ installer and the history.
 | `providers.go` | per-provider signature checks and payload parsing |
 | `generic.go` | generic webhooks: auth, `when`, params, JSON paths |
 | `woocommerce.go` | WooCommerce webhooks, REST API client, `nimdeploy woocommerce` |
+| `payments.go` | Stripe, Paddle and Lemon Squeezy webhooks |
+| `schedule.go` | cron parser and the scheduler |
+| `metrics.go` | `/metrics` in the Prometheus format |
 | `runner.go` | locking, queue, process groups, log files |
 | `history.go` | history rebuilt from log files |
 | `ci.go` | wait for GitHub Actions |
 | `notify.go` | Slack, Discord, Telegram, JSON notifications, commit statuses |
 | `install.go`, `quick.go` | `nimdeploy install` / `uninstall` |
-| `cloudflare.go` | Cloudflare's IP ranges for `trusted_proxies = ["cloudflare"]` |
+| `cloudflare.go` | Cloudflare's IP ranges for `trusted_proxies = ["cloudflare"]`, cache purges |
 | `cli.go` | `run`, `status`, `history`, `nginx` |
 | `install.sh` | root and user installer shipped in the release archive |
 | `get.sh` | one-line installer published at `nimdeploy.nimbox360.com/install.sh` |

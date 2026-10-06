@@ -7,6 +7,8 @@
 | `GET /status` | state of every deploy. Token required if `api_token_env` is set |
 | `GET /status/{name}` | state of one deploy. Same |
 | `GET /history/{name}?limit=N` | past deploys from the kept logs, newest first. Same |
+| `POST /rollback/{name}` | redeploy the last good commit, or `{"commit":"..."}`. Token required |
+| `GET /metrics` | Prometheus metrics ([details](../guides/metrics.md)). Token required if `api_token_env` is set |
 | `GET /healthz` | liveness, always open |
 
 With `api_token_env` set, send `Authorization: Bearer <token>`.
@@ -43,6 +45,9 @@ With `api_token_env` set, send `Authorization: Bearer <token>`.
 | `failed` | non-zero exit or timeout |
 | `skipped` | CI failed, timed out, or a newer push superseded it |
 | `interrupted` | the service stopped mid-deploy |
+
+`trigger` is `webhook`, `manual`, `rollback` or `schedule`; scheduled deploys
+also have `next_run`.
 
 `queued` appears only while a push waits. A queued push is lost if the
 service stops before it runs; that is logged.

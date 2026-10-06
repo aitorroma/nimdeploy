@@ -107,3 +107,30 @@ timeout = "10m"
 #topics = ["order.created", "order.updated"]
 #statuses = ["processing", "completed"]
 #command = "/usr/local/bin/provision.sh"   # the order: $DEPLOY_PAYLOAD_FILE, its ID: $DEPLOY_RESOURCE_ID
+
+# Cloudflare cache purge after deploys (token with Zone → Cache Purge).
+#[cloudflare]
+#api_token_env = "CLOUDFLARE_API_TOKEN"
+
+# Around any deploy, inside its [deploy.<name>] table (see "Hooks, health checks and rollback"):
+#before = "php artisan down --retry=15"
+#after_success = "php artisan up"
+#after_failure = "php artisan up"
+#health_url = "https://example.com/up"
+#health_timeout = "60s"
+#rollback_on_failure = true
+#cloudflare_zone_id = "<zone id>"
+#cloudflare_purge = ["everything"]
+
+# A scheduled job: no path, no webhook (see "Scheduled tasks").
+#[deploy.backup]
+#schedule = "15 2 * * *"
+#command = "/usr/local/bin/backup-db.sh"
+
+# Payments: stripe, paddle or lemonsqueezy (see "Stripe, Paddle and Lemon Squeezy").
+#[deploy.checkout]
+#provider = "stripe"
+#path = "/hooks/stripe"
+#secret_env = "STRIPE_WEBHOOK_SECRET"
+#events = ["checkout.session.completed"]
+#command = "/usr/local/bin/provision.sh"

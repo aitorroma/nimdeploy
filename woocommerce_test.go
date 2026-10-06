@@ -168,12 +168,14 @@ url_env = "TEST_NOTIFY_URL"
 	for len(got()) < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
+	// Sent concurrently: look for the order's among them.
 	msgs := got()
-	var first []byte
-	if len(msgs) > 0 {
-		first, _ = json.Marshal(msgs[0].body)
+	found := false
+	for _, m := range msgs {
+		b, _ := json.Marshal(m.body)
+		found = found || (strings.Contains(string(b), "rejected, not run") && strings.Contains(string(b), `"resource_id":"77"`))
 	}
-	if !strings.Contains(string(first), "rejected, not run") || !strings.Contains(string(first), `"resource_id":"77"`) {
+	if !found {
 		t.Fatalf("notifications %+v", msgs)
 	}
 	if _, err := os.Stat(marker); err == nil {

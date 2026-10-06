@@ -181,8 +181,9 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 	if st.Pusher != "" {
 		fmt.Fprintf(&b, " · by %s", st.Pusher)
 	}
-	if st.Trigger == TriggerManual {
-		b.WriteString(" (manual)")
+	switch st.Trigger {
+	case TriggerManual, TriggerRollback, TriggerSchedule:
+		b.WriteString(" (" + st.Trigger + ")")
 	}
 	if st.Status == StatusSkipped {
 		fmt.Fprintf(&b, "\n%s", st.Error)

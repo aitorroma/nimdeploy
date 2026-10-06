@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,8 +30,9 @@ const (
 	StatusWaiting     = "waiting" // waiting for CI
 	StatusSkipped     = "skipped" // not deployed: CI failed or a newer push replaced it
 
-	TriggerWebhook = "webhook"
-	TriggerManual  = "manual"
+	TriggerWebhook  = "webhook"
+	TriggerManual   = "manual"
+	TriggerRollback = "rollback"
 
 	ResultStarted = "started"
 	ResultQueued  = "queued"
@@ -96,6 +99,8 @@ type State struct {
 	Error      string      `json:"error,omitempty"`
 	Log        string      `json:"log,omitempty"`
 	Queued     *QueuedInfo `json:"queued,omitempty"`
+	// NextRun is the next scheduled run (deploys with a schedule).
+	NextRun *time.Time `json:"next_run,omitempty"`
 }
 
 // QueuedInfo is the push waiting for the running deploy to finish.
@@ -137,8 +142,13 @@ type Runner struct {
 	running      map[string]int  // per lane (see Trigger.lane)
 	active       map[string]bool // log files currently being written
 	states       map[string]*State
-	lastFinished map[string]string             // status of the last completed run
-	pending      map[string][]*pendingRun      // per lane, oldest first
+	lastFinished map[string]string        // status of the last completed run
+	pending      map[string][]*pendingRun // per lane, oldest first
+	nextRun      map[string]time.Time     // scheduled deploys
+	reload       chan struct{}            // wakes the scheduler after a config change
+	stopSched    chan struct{}
+	schedDone    chan struct{}
+	metrics      *metrics
 	inflight     map[string]map[string]Trigger // queue_mode "all": running triggers per deploy, by log file
 	seen         *deliveryCache
 }
@@ -157,6 +167,11 @@ func NewRunner(cfg *Config, notifier *Notifier) (*Runner, error) {
 		states:       map[string]*State{},
 		lastFinished: map[string]string{},
 		pending:      map[string][]*pendingRun{},
+		nextRun:      map[string]time.Time{},
+		reload:       make(chan struct{}, 1),
+		stopSched:    make(chan struct{}),
+		schedDone:    make(chan struct{}),
+		metrics:      newMetrics(),
 		inflight:     map[string]map[string]Trigger{},
 		seen:         newDeliveryCache(seenDeliveries),
 	}
@@ -164,6 +179,7 @@ func NewRunner(cfg *Config, notifier *Notifier) (*Runner, error) {
 	r.mu.Lock()
 	r.resumeLocked()
 	r.mu.Unlock()
+	go r.scheduler()
 	return r, nil
 }
 
@@ -185,6 +201,10 @@ func (r *Runner) SetConfig(cfg *Config, notifier *Notifier) {
 			r.loadState(name)
 			r.loadQueue(cfg.Deploy[name])
 		}
+	}
+	select {
+	case r.reload <- struct{}{}:
+	default:
 	}
 }
 
@@ -218,10 +238,14 @@ func (r *Runner) loadState(name string) {
 func (r *Runner) State(name string) State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if st, ok := r.states[name]; ok {
-		return copyState(st)
+	st := State{Deploy: name, Status: StatusNever}
+	if s, ok := r.states[name]; ok {
+		st = copyState(s)
 	}
-	return State{Deploy: name, Status: StatusNever}
+	if at, ok := r.nextRun[name]; ok {
+		st.NextRun = &at
+	}
+	return st
 }
 
 // Submit starts a deploy, or queues it behind the running one. Queued pushes
@@ -330,14 +354,15 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	}
 	notifier := r.notifier
 	retain := r.cfg.Logging.Retain
+	cf := r.cfg.Cloudflare
 
 	log.Printf("deploy=%s status=started trigger=%s delivery=%s commit=%s log=%s", d.Name, t.Source, t.Delivery, t.Commit, st.Log)
 	r.wg.Add(1)
-	go r.run(d, t, env, f, path, st, start, notifier, retain)
+	go r.run(d, t, env, f, path, st, start, notifier, retain, cf)
 	return st, nil
 }
 
-func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path string, st *State, start time.Time, notifier *Notifier, retain int) {
+func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path string, st *State, start time.Time, notifier *Notifier, retain int, cf CloudflareConfig) {
 	defer r.wg.Done()
 
 	logf := func(format string, args ...any) {
@@ -391,7 +416,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 	if proceed {
 		notifier.CommitStatus(d, t, "pending", "Deploying")
-		status, exitCode, errMsg = r.execute(d, env, f)
+		status, exitCode, errMsg = r.withHooks(d, env, f, logf, cf)
 	}
 
 	finished := time.Now()
@@ -451,15 +476,146 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	final.Queued = nil
 	r.mu.Unlock()
 
+	r.metrics.finished(d.Name, status, finished.Sub(cmdStart))
 	notifier.Finished(d, t, final, recovered, path, superseded)
+
+	if status == StatusFailed && d.RollbackOnFailure && t.Source != TriggerRollback && errMsg != errShutdownCanceled {
+		r.autoRollback(d, t)
+	}
+}
+
+// withHooks runs before, the command, the health check and the after hooks.
+func (r *Runner) withHooks(d *DeployConfig, env []string, f *os.File, logf func(string, ...any), cf CloudflareConfig) (status string, exitCode *int, errMsg string) {
+	hook := func(name, script string) (string, string) {
+		fmt.Fprintln(f)
+		logf("hook=%s", name)
+		st, _, msg := r.runCmd(d, env, f, "/bin/bash", []string{"-eo", "pipefail", "-c", script})
+		if st != StatusSuccess {
+			logf("hook=%s failed: %s", name, msg)
+		}
+		fmt.Fprintln(f)
+		return st, msg
+	}
+	if d.Before != "" {
+		if st, msg := hook("before", d.Before); st != StatusSuccess {
+			if d.AfterFailure != "" && msg != errShutdownCanceled {
+				hook("after_failure", d.AfterFailure)
+			}
+			if msg == errShutdownCanceled {
+				return StatusFailed, nil, msg
+			}
+			return StatusFailed, nil, "before hook: " + msg
+		}
+	}
+	status, exitCode, errMsg = r.execute(d, env, f)
+	if status == StatusSuccess && d.HealthURL != "" {
+		if err := r.healthCheck(d, logf); err != nil {
+			status, errMsg = StatusFailed, "health check: "+err.Error()
+		}
+	}
+	if status == StatusSuccess {
+		if d.CloudflareZoneID != "" {
+			if err := purgeCloudflare(r.ctx, cf, d.CloudflareZoneID, d.CloudflarePurge); err != nil {
+				logf("cloudflare: purge failed: %v", err) // the deploy itself worked
+			} else {
+				logf("cloudflare: purged %s", strings.Join(d.CloudflarePurge, ", "))
+			}
+		}
+		if d.AfterSuccess != "" {
+			hook("after_success", d.AfterSuccess) // logged; the deploy already succeeded
+		}
+	} else if d.AfterFailure != "" && errMsg != errShutdownCanceled {
+		hook("after_failure", d.AfterFailure)
+	}
+	return status, exitCode, errMsg
+}
+
+// healthCheck waits for HealthURL to answer 2xx/3xx, up to HealthTimeout.
+func (r *Runner) healthCheck(d *DeployConfig, logf func(string, ...any)) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	deadline := time.Now().Add(d.HealthTimeout.Duration)
+	last := ""
+	for {
+		req, err := http.NewRequestWithContext(r.ctx, http.MethodGet, d.HealthURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("User-Agent", "nimdeploy-health/"+version)
+		resp, err := client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			resp.Body.Close()
+			if resp.StatusCode < 400 {
+				logf("health: GET %s -> %d", d.HealthURL, resp.StatusCode)
+				return nil
+			}
+			last = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		} else {
+			last = err.Error()
+		}
+		if time.Now().After(deadline) || r.ctx.Err() != nil {
+			logf("health: GET %s -> %s after %s", d.HealthURL, last, d.HealthTimeout)
+			return fmt.Errorf("%s did not answer 2xx/3xx in %s (%s)", d.HealthURL, d.HealthTimeout, last)
+		}
+		select {
+		case <-r.ctx.Done():
+		case <-time.After(min(2*time.Second, d.HealthTimeout.Duration)):
+		}
+	}
+}
+
+// RollbackTarget is the commit of the most recent successful deploy other
+// than the latest run's: what was live before the latest change.
+func (r *Runner) RollbackTarget(name string) (commit, fromLog string, err error) {
+	h, err := r.History(name, 0)
+	if err != nil {
+		return "", "", err
+	}
+	return rollbackTargetIn(h)
+}
+
+// rollbackTargetIn picks the target from a history, newest first.
+func rollbackTargetIn(h []State) (commit, fromLog string, err error) {
+	if len(h) == 0 {
+		return "", "", errors.New("no deploys in the history")
+	}
+	latest := h[0].Commit
+	for _, st := range h {
+		if st.Status == StatusSuccess && st.Commit != "" && st.Commit != latest {
+			return st.Commit, st.Log, nil
+		}
+	}
+	return "", "", fmt.Errorf("no earlier successful deploy with another commit in the kept logs (latest: %s)", dash(shortSHA(latest)))
+}
+
+// autoRollback redeploys the last good commit after a failed deploy.
+func (r *Runner) autoRollback(d *DeployConfig, failed Trigger) {
+	commit, from, err := r.RollbackTarget(d.Name)
+	if err != nil {
+		log.Printf("deploy=%s rollback_on_failure: nothing to roll back to: %v", d.Name, err)
+		return
+	}
+	log.Printf("deploy=%s rollback_on_failure: redeploying %s (deployed by %s)", d.Name, shortSHA(commit), from)
+	_, err = r.Submit(d.Name, Trigger{Source: TriggerRollback, Provider: d.Provider, Repository: d.Repository,
+		Ref: "refs/heads/" + d.Branch, Branch: d.Branch, Commit: commit,
+		Pusher: "auto, " + dash(shortSHA(failed.Commit)) + " failed"})
+	if err != nil {
+		log.Printf("deploy=%s rollback_on_failure: %v", d.Name, err)
+	}
 }
 
 // execute runs the deploy command, writing its output to f.
 func (r *Runner) execute(d *DeployConfig, env []string, f *os.File) (status string, exitCode *int, errMsg string) {
+	return r.runCmd(d, env, f, d.Command, d.Args)
+}
+
+// runCmd runs a command (the deploy's or a hook) with the deploy's timeout,
+// directory and environment, in its own process group.
+func (r *Runner) runCmd(d *DeployConfig, env []string, f *os.File, command string, args []string) (status string, exitCode *int, errMsg string) {
 	ctx, cancel := context.WithTimeout(r.ctx, d.Timeout.Duration)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.Command, d.Args...)
+	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = d.WorkingDirectory
 	cmd.Env = env
 	if d.logOutput {
@@ -711,8 +867,13 @@ func (r *Runner) persist(st *State) {
 // then kills whatever is left.
 func (r *Runner) Shutdown(grace time.Duration) {
 	r.mu.Lock()
+	alreadyClosing := r.closing
 	r.closing = true
 	r.mu.Unlock()
+	if !alreadyClosing {
+		close(r.stopSched)
+		<-r.schedDone
+	}
 
 	done := make(chan struct{})
 	go func() { r.wg.Wait(); close(done) }()
@@ -845,26 +1006,18 @@ func updateLatest(dir, filename string) error {
 	return os.Rename(tmp, filepath.Join(dir, latestLogName))
 }
 
-// pruneLogs keeps the newest retain log files in dir. Names start with a
-// timestamp, so lexical order is chronological.
+// pruneLogs keeps the newest retain log files in dir, in the same order as
+// the history (see logsNewestFirst).
 func pruneLogs(dir string, retain int, active map[string]bool) error {
 	if retain <= 0 {
 		return nil
 	}
-	entries, err := os.ReadDir(dir)
+	logs, err := logsNewestFirst(dir)
 	if err != nil {
 		return err
 	}
-	var logs []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.Type().IsRegular() && strings.HasSuffix(name, ".log") && !strings.HasPrefix(name, ".") {
-			logs = append(logs, name)
-		}
-	}
-	sort.Strings(logs)
 	var errs []error
-	for _, name := range logs[:max(0, len(logs)-retain)] {
+	for _, name := range logs[min(retain, len(logs)):] {
 		path := filepath.Join(dir, name)
 		if active[path] {
 			continue

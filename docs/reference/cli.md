@@ -6,6 +6,7 @@ nimdeploy uninstall [--purge]         remove a user install
 nimdeploy send [flags] <url>          POST a signed JSON body to a generic webhook (no config needed)
 nimdeploy [flags] serve               run the webhook server (what the service does)
 nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
+nimdeploy [flags] rollback [-to SHA] [-n] [-f] <deploy>
 nimdeploy [flags] status [-json] [deploy]
 nimdeploy [flags] history [-n 20] [-json] [deploy]
 nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
@@ -53,6 +54,16 @@ nimdeploy run -p SERVICE=api services # params, validated like the webhook's
 Manual runs go through the same lock and queue as webhooks, don't wait for
 CI, and appear as `manual` in the history. Use it after creating a missing
 `.env`, to redeploy after fixing something on the server, or to retry.
+
+## rollback
+
+```bash
+nimdeploy rollback -n shop         # show the commit it would deploy
+nimdeploy rollback -f shop         # deploy the last good commit and follow the log
+nimdeploy rollback -to 9f1c2e7 shop
+```
+
+See [Hooks, health checks and rollback](../guides/hooks-rollback.md#rollback).
 
 ## send
 

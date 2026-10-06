@@ -8,6 +8,7 @@ Cloudflare Tunnel or similar, which handles TLS. Keep `listen` local
 |---|---|
 | `/hooks/...` | **yes**, the git host has to reach it. Protected by the signature |
 | `/status`, `/history/...`, `/deploy/...` | only with `api_token_env` set, and only if you need them from outside the server |
+| `/metrics` | only to your monitoring, and with `api_token_env` set |
 | `/healthz` | for the proxy's health checks, if any |
 
 ## Things the proxy has to get right

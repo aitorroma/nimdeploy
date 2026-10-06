@@ -91,10 +91,28 @@ Kubernetes: a VPS, an EC2 instance, a HestiaCP box.
 
     ---
 
-    WooCommerce order paid → your provisioning script runs → the order gets a
-    note and is completed. Set up in one command, nothing lost on restarts.
+    WooCommerce, Stripe, Paddle or Lemon Squeezy payment → your provisioning
+    script runs → the order gets a note. Nothing lost on restarts.
 
     [:octicons-arrow-right-24: WooCommerce](guides/woocommerce.md)
+
+-   :material-backup-restore:{ .lg } __Safe deploys and rollback__
+
+    ---
+
+    Hooks before and after, health checks, Cloudflare purges, scheduled jobs,
+    and `nimdeploy rollback` (or automatic rollback when a deploy fails).
+
+    [:octicons-arrow-right-24: Hooks and rollback](guides/hooks-rollback.md)
+
+-   :material-chart-line:{ .lg } __Prometheus metrics__
+
+    ---
+
+    Deploys, durations, queues, failures and webhook answers on `/metrics`,
+    with ready-made alert rules.
+
+    [:octicons-arrow-right-24: Metrics](guides/metrics.md)
 
 -   :material-bell-ring-outline:{ .lg } __Tells you when it breaks__
 

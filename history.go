@@ -18,21 +18,13 @@ import (
 // runs from before any restart.
 func (r *Runner) History(name string, limit int) ([]State, error) {
 	dir := filepath.Join(r.dir, name)
-	entries, err := os.ReadDir(dir)
+	logs, err := logsNewestFirst(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return []State{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var logs []string
-	for _, e := range entries {
-		n := e.Name()
-		if e.Type().IsRegular() && strings.HasSuffix(n, ".log") && !strings.HasPrefix(n, ".") {
-			logs = append(logs, n)
-		}
-	}
-	sort.Sort(sort.Reverse(sort.StringSlice(logs)))
 	if limit > 0 && len(logs) > limit {
 		logs = logs[:limit]
 	}
@@ -157,6 +149,54 @@ func parseLog(path string) State {
 		}
 	}
 	return st
+}
+
+// logsNewestFirst lists a deploy's log files, newest first. Names start
+// with the start time to the second; runs started within the same second
+// are ordered by when their log was last written.
+func logsNewestFirst(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	type logFile struct {
+		name string
+		mod  time.Time
+	}
+	var files []logFile
+	for _, e := range entries {
+		n := e.Name()
+		if e.Type().IsRegular() && strings.HasSuffix(n, ".log") && !strings.HasPrefix(n, ".") {
+			lf := logFile{name: n}
+			if info, err := e.Info(); err == nil {
+				lf.mod = info.ModTime()
+			}
+			files = append(files, lf)
+		}
+	}
+	sort.SliceStable(files, func(i, j int) bool {
+		si, sj := logStamp(files[i].name), logStamp(files[j].name)
+		if si != sj {
+			return si > sj
+		}
+		if !files[i].mod.Equal(files[j].mod) {
+			return files[i].mod.After(files[j].mod)
+		}
+		return files[i].name > files[j].name
+	})
+	logs := make([]string, len(files))
+	for i, f := range files {
+		logs[i] = f.name
+	}
+	return logs, nil
+}
+
+// logStamp is the "20060102-150405" start time a log name begins with.
+func logStamp(name string) string {
+	if len(name) >= 15 {
+		return name[:15]
+	}
+	return name
 }
 
 func splitLogLine(line string) (ts time.Time, key, val string, ok bool) {

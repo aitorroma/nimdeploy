@@ -67,7 +67,7 @@ sequenceDiagram
 | Variable | Example |
 |---|---|
 | `DEPLOY_NAME` | `shop` |
-| `DEPLOY_TRIGGER` | `webhook` or `manual` |
+| `DEPLOY_TRIGGER` | `webhook`, `manual`, `rollback` or `schedule` |
 | `DEPLOY_PROVIDER` | `github` |
 | `DEPLOY_REPOSITORY` | `acme/shop` |
 | `DEPLOY_BRANCH` | `main` |

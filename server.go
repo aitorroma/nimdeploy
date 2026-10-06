@@ -29,12 +29,17 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	for _, name := range s.cfg.DeployNames() {
 		d := s.cfg.Deploy[name]
-		mux.HandleFunc("POST "+d.Path, s.handleWebhook(d))
+		if d.Path == "" {
+			continue // scheduled only
+		}
+		mux.HandleFunc("POST "+d.Path, s.countWebhook(d.Name, s.handleWebhook(d)))
 	}
 	mux.HandleFunc("GET /status", s.requireToken(false, s.handleStatusAll))
 	mux.HandleFunc("GET /status/{name}", s.requireToken(false, s.handleStatus))
 	mux.HandleFunc("GET /history/{name}", s.requireToken(false, s.handleHistory))
 	mux.HandleFunc("POST /deploy/{name}", s.requireToken(true, s.handleManualDeploy))
+	mux.HandleFunc("POST /rollback/{name}", s.requireToken(true, s.handleRollback))
+	mux.HandleFunc("GET /metrics", s.requireToken(false, s.handleMetrics))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -162,6 +167,9 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 		return s.handleGeneric(d)
 	case providerWooCommerce:
 		return s.handleWooCommerce(d)
+	}
+	if paymentProvider(d.Provider) {
+		return s.handlePayment(d)
 	}
 	p := providers[d.Provider]
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -380,6 +388,48 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 		t.Ref, t.Branch = "refs/heads/"+d.Branch, d.Branch
 	}
 	s.submit(w, d, t)
+}
+
+// handleRollback redeploys the last good commit, or the one given.
+func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.cfg.Deploy[r.PathValue("name")]
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown deploy")
+		return
+	}
+	if _, git := providers[d.Provider]; !git {
+		writeError(w, http.StatusBadRequest, "rollback needs a git deploy (it redeploys a commit)")
+		return
+	}
+	var req manualRequest
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "cannot read body")
+		return
+	}
+	if len(strings.TrimSpace(string(body))) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	commit := req.Commit
+	if commit == "" {
+		if commit, _, err = s.runner.RollbackTarget(d.Name); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	log.Printf("deploy=%s rollback to %s requested by %s", d.Name, shortSHA(commit), firstNonEmpty(req.User, "api"))
+	s.submit(w, d, Trigger{
+		Source:     TriggerRollback,
+		Provider:   d.Provider,
+		Repository: d.Repository,
+		Ref:        "refs/heads/" + d.Branch,
+		Branch:     d.Branch,
+		Commit:     commit,
+		Pusher:     firstNonEmpty(req.User, "api"),
+	})
 }
 
 func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {

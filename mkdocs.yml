@@ -94,6 +94,10 @@ nav:
       - Git providers: guides/providers.md
       - Generic webhooks and Ansible: guides/generic.md
       - Deploy from a WooCommerce sale: guides/woocommerce.md
+      - Stripe, Paddle and Lemon Squeezy: guides/payments.md
+      - Scheduled tasks: guides/scheduled.md
+      - Hooks, health checks and rollback: guides/hooks-rollback.md
+      - Metrics and alerts: guides/metrics.md
   - Reverse proxy:
       - proxy/index.md
       - nginx: proxy/nginx.md

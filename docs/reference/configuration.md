@@ -62,6 +62,13 @@ See [Notifications](../guides/notifications.md).
 | `commit_status` | `true` | `false`: use the token only for `wait_for_ci` |
 | `api_url` | `https://api.github.com` | GitHub Enterprise Server API URL |
 
+## `[cloudflare]`
+
+| Key | Default | |
+|---|---|---|
+| `api_token_env` | – | env var with an API token allowed to purge the cache |
+| `api_url` | `https://api.cloudflare.com/client/v4` | |
+
 ## `[deploy.<name>]`
 
 One table per deploy. The name is used in the CLI, the log directory and
@@ -69,8 +76,8 @@ One table per deploy. The name is used in the CLI, the log directory and
 
 | Key | Default | |
 |---|---|---|
-| `path` | required | URL path the git host posts to, e.g. `/hooks/shop` |
-| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), `generic` for any JSON webhook ([details](../guides/generic.md)), or `woocommerce` ([details](../guides/woocommerce.md)) |
+| `path` | required (unless `schedule`) | URL path the git host posts to, e.g. `/hooks/shop` |
+| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), `generic` for any JSON webhook ([details](../guides/generic.md)), `woocommerce` ([details](../guides/woocommerce.md)), `stripe`, `paddle`, `lemonsqueezy` ([details](../guides/payments.md)) |
 | `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored. Optional for `generic` |
 | `branch` | `main` | pushes to other branches are ignored. Not for `generic` |
 | `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
@@ -89,7 +96,13 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `queue_key` | – | param whose value gets its own lock and queue |
 | `queue_mode` | `latest` (`all` for woocommerce) | `latest`: only the newest waiting run is kept. `all`: every run waits its turn, in order, saved in `queue.json` so a restart resumes them (and runs again one it interrupted) |
 | `queue_max` | `1000` | with `all`: beyond it, `503` |
-| `payload_file` | `true` for generic and woocommerce | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |
+| `schedule` | – | cron schedule (`*/15 * * * *`, `@daily`, `@every 10m`); without `path` the deploy only runs on it ([details](../guides/scheduled.md)) |
+| `before`, `after_success`, `after_failure` | – | bash run around the command ([details](../guides/hooks-rollback.md)) |
+| `health_url`, `health_timeout` | –, `60s` | must answer 2xx/3xx after the command, or the deploy fails |
+| `rollback_on_failure` | `false` | git deploys: redeploy the last good commit when a deploy fails |
+| `cloudflare_zone_id`, `cloudflare_purge` | – | purge `["everything"]` or URLs after a successful deploy (needs `[cloudflare]`) |
+| `events` | – | stripe, paddle, lemonsqueezy: event types that run ([details](../guides/payments.md)) |
+| `payload_file` | `true` for generic, woocommerce and payments | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |
 
 WooCommerce adds `store_url`, `webhook_url`, `api_key_env`, `api_secret_env`,
 `topics` and `statuses`: see [WooCommerce](../guides/woocommerce.md#configuration).
