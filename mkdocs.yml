@@ -1,0 +1,108 @@
+site_name: nimdeploy
+site_description: Push-to-deploy webhook receiver for Linux servers. One static binary, no root needed.
+site_url: https://nimdeploy.nimbox360.com/
+site_author: Nimbox360
+repo_url: https://github.com/aitorroma/nimdeploy
+repo_name: aitorroma/nimdeploy
+edit_uri: edit/main/docs/
+copyright: nimdeploy is MIT licensed · a <a href="https://nimbox360.com">Nimbox360</a> project
+
+theme:
+  name: material
+  language: en
+  icon:
+    logo: material/rocket-launch-outline
+    repo: fontawesome/brands/github
+  favicon: assets/favicon.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+
+extra_css:
+  - assets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quick start: getting-started.md
+      - How it works: how-it-works.md
+  - Install:
+      - install/index.md
+      - Without root: install/user.md
+      - Service account + operator: install/service-account.md
+      - As root: install/root.md
+      - Upgrade and uninstall: install/upgrade.md
+  - Guides:
+      - Nuxt (SSR) with pm2: guides/nuxt.md
+      - Laravel: guides/laravel.md
+      - Any app with pm2: guides/pm2.md
+      - Wait for CI: guides/wait-for-ci.md
+      - Notifications and commit statuses: guides/notifications.md
+      - Git providers: guides/providers.md
+  - Reverse proxy:
+      - proxy/index.md
+      - nginx: proxy/nginx.md
+      - HestiaCP: proxy/hestiacp.md
+      - Caddy: proxy/caddy.md
+      - Traefik: proxy/traefik.md
+      - Cloudflare: proxy/cloudflare.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - Command line: reference/cli.md
+      - HTTP endpoints: reference/endpoints.md
+      - Logs and history: reference/logs.md
+      - Security model: reference/security.md
+  - Development: development.md

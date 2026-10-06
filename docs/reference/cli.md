@@ -1,0 +1,79 @@
+# Command line
+
+```text
+nimdeploy install                     install for the current user, no root needed
+nimdeploy uninstall [--purge]         remove a user install
+nimdeploy [flags] serve               run the webhook server (what the service does)
+nimdeploy [flags] run [-commit SHA] [-f] <deploy>
+nimdeploy [flags] status [-json] [deploy]
+nimdeploy [flags] history [-n 20] [-json] [deploy]
+nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
+```
+
+| Flag | |
+|---|---|
+| `-config PATH` | config file (`$NIMDEPLOY_CONFIG`; default `/etc/nimdeploy/config.toml`, or, when not root, `~/.config/nimdeploy/config.toml` if it exists) |
+| `-env-file PATH` | secrets file the CLI reads the API token from (default: `secrets.env` next to the config) |
+| `-check` | validate the config and secrets, then exit |
+| `-version` | print the version |
+
+Flags go **before** the command, and command flags before the deploy name:
+`nimdeploy -config /etc/x.toml run -f shop`.
+
+`run`, `status` and `history` talk to the running service on its `listen`
+address with the API token from `secrets.env`, so run them as the user who
+can read that file (`sudo` for the root install, `sudo -iu deploy` for the
+service-account install, yourself for a user install). Run without a command
+in a terminal, nimdeploy prints this help instead of starting a server.
+
+## status
+
+```bash
+nimdeploy status
+nimdeploy status -json agency
+```
+
+```text
+DEPLOY    STATUS               STARTED              DURATION  COMMIT   BY   LOG
+agency    running (+1 queued)  2026-09-29 15:57:53  -         1111111  dev  20260929-155753-d11111.log
+frontend  success              2026-09-29 13:10:02  1m12s     c93a11f  ana  20260929-131002-c93a11.log
+```
+
+## run
+
+```bash
+nimdeploy run agency                  # deploy the branch head
+nimdeploy run -commit 9f1c2e7 agency  # a specific commit
+nimdeploy run -f agency               # follow the log; exit code 1 if it fails
+```
+
+Manual runs go through the same lock and queue as webhooks, don't wait for
+CI, and appear as `manual` in the history. Use it after creating a missing
+`.env`, to redeploy after fixing something on the server, or to retry.
+
+## history
+
+```bash
+nimdeploy history                     # all deploys, newest first
+nimdeploy history -n 50 agency
+```
+
+```text
+DEPLOY  STATUS   STARTED              DURATION  TRIGGER  COMMIT   BY         LOG                         NOTE
+lotes   skipped  2026-09-30 10:12:03  2m10s     webhook  a41f09c  ana        20260930-101203-7f3a21.log  CI failed: linter=success tests=failure
+lotes   success  2026-09-29 15:54:23  50s       webhook  05e8108  aitorroma  20260929-155423-09c5ee.log
+lotes   success  2026-09-29 15:49:13  50s       manual   -        root       20260929-154913-c49e52.log
+```
+
+Rebuilt from the log files themselves, so it survives restarts and covers
+every run whose log is still kept (`logging.retain`).
+
+## nginx
+
+```bash
+nimdeploy nginx > /etc/nginx/snippets/nimdeploy.conf
+nimdeploy nginx -api
+```
+
+Prints one exact `location` per hook path (plus `/status` and `/deploy` with
+`-api`), with the right upstream, socket, prefix and body size.

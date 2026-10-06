@@ -1,0 +1,129 @@
+# Configuration
+
+One TOML file plus a secrets file:
+
+| Install | Config | Secrets |
+|---|---|---|
+| without root | `~/.config/nimdeploy/config.toml` | `~/.config/nimdeploy/secrets.env` |
+| service account | `~deploy/.config/nimdeploy/config.toml` | `~deploy/.config/nimdeploy/secrets.env` |
+| as root | `/etc/nimdeploy/config.toml` | `/etc/nimdeploy/secrets.env` |
+
+The config only holds the **names** of environment variables (`*_env`); the
+values live in `secrets.env` (`NAME=value`, mode `600`), which systemd loads
+as the service's environment. The config can therefore be shared or
+committed; the secrets file never.
+
+```bash
+nimdeploy -check                 # validate config and secrets, exit 0/1
+systemctl reload nimdeploy       # apply config.toml; running deploys continue
+systemctl restart nimdeploy      # after changing secrets.env, listen or logging.directory
+```
+
+A complete annotated example is in
+[`config.example.toml`](https://github.com/aitorroma/nimdeploy/blob/main/config.example.toml).
+
+## `[server]`
+
+| Key | Default | |
+|---|---|---|
+| `listen` | `127.0.0.1:9000` | `host:port` or `unix:/path/to.sock` |
+| `socket_mode` | `0666` | permissions of the unix socket |
+| `base_path` | – | only if the proxy forwards `/prefix/hooks/...` without stripping `/prefix` |
+| `trusted_proxies` | `["127.0.0.0/8", "::1"]` | proxies whose `X-Forwarded-For` / `X-Real-IP` are believed; `"cloudflare"` adds Cloudflare's ranges |
+| `client_ip_header` | – | e.g. `CF-Connecting-IP`, read only from trusted proxies |
+| `max_body_bytes` | `26214400` (25 MB) | larger requests are rejected |
+| `shutdown_timeout` | `5m` | on stop, wait this long for running deploys |
+| `api_token_env` | – | env var with the Bearer token for `/status`, `/history`, `/deploy` and the CLI. Without it `/status` is open and manual deploys are disabled |
+
+## `[logging]`
+
+| Key | Default | |
+|---|---|---|
+| `directory` | `/var/log/nimdeploy` | one subdirectory per deploy (user install: `~/.local/state/nimdeploy`) |
+| `retain` | `30` | log files kept per deploy; `0` keeps all |
+
+## `[notify]`
+
+| Key | Default | |
+|---|---|---|
+| `format` | – | `slack`, `discord`, `telegram` or `json` |
+| `on` | `failure` | `failure` (failures and recoveries), `always`, `never` |
+| `url_env` | – | env var with the webhook URL (all formats except Telegram) |
+| `telegram_token_env`, `telegram_chat_id` | – | Telegram bot token variable and chat ID |
+| `log_lines` | `20` | last log lines included in failure messages |
+
+See [Notifications](../guides/notifications.md).
+
+## `[github]`
+
+| Key | Default | |
+|---|---|---|
+| `token_env` | – | env var with a GitHub token, for commit statuses and `wait_for_ci` |
+| `commit_status` | `true` | `false`: use the token only for `wait_for_ci` |
+| `api_url` | `https://api.github.com` | GitHub Enterprise Server API URL |
+
+## `[deploy.<name>]`
+
+One table per deploy. The name is used in the CLI, the log directory and
+`DEPLOY_NAME`.
+
+| Key | Default | |
+|---|---|---|
+| `path` | required | URL path the git host posts to, e.g. `/hooks/shop` |
+| `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)) |
+| `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored |
+| `branch` | `main` | pushes to other branches are ignored |
+| `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
+| `command` | required | run directly, no shell |
+| `args` | – | arguments; for an inline script use `command = "/bin/bash"`, `args = ["-c", "..."]` |
+| `working_directory` | service's cwd | |
+| `env` | – | extra `KEY=VALUE` entries, e.g. `PATH=...` |
+| `timeout` | `30m` | then the whole process group gets `SIGTERM`, and `SIGKILL` 10 s later |
+| `lock` | `true` | one run at a time; `false` allows parallel runs |
+| `queue` | `true` | with `lock`, a push during a run waits for it; later pushes replace the queued one. `false`: answer `409` |
+| `log_output` | `true` | `false` keeps only the header and footer lines in the log |
+| `wait_for_ci` | – | GitHub Actions workflow names that must pass first ([details](../guides/wait-for-ci.md)) |
+| `ci_timeout` | `30m` | |
+
+## Example
+
+```toml
+[server]
+listen = "127.0.0.1:9000"
+api_token_env = "NIMDEPLOY_API_TOKEN"
+
+[logging]
+directory = "/var/log/nimdeploy"
+retain = 30
+
+[notify]
+format = "slack"
+url_env = "NOTIFY_WEBHOOK_URL"
+
+[deploy.agency-frontend]
+path = "/hooks/agency-frontend"
+repository = "acme/agency-frontend"
+branch = "main"
+secret_env = "AGENCY_FRONTEND_WEBHOOK_SECRET"
+working_directory = "/var/www/frontend/agency"
+command = "/home/deploy/bin/deploy-agency-frontend.sh"
+
+[deploy.agency-backend]
+path = "/hooks/agency-backend"
+repository = "acme/agency-backend"
+branch = "main"
+secret_env = "AGENCY_BACKEND_WEBHOOK_SECRET"
+working_directory = "/var/www/backend/agency"
+command = "/home/deploy/bin/deploy-agency-backend.sh"
+timeout = "20m"
+```
+
+```bash title="secrets.env (600)"
+NIMDEPLOY_API_TOKEN=3f9c...
+AGENCY_FRONTEND_WEBHOOK_SECRET=8a21...
+AGENCY_BACKEND_WEBHOOK_SECRET=d07e...
+NOTIFY_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+Generate secrets with `openssl rand -hex 32`. The same values go into each
+repository's webhook settings.

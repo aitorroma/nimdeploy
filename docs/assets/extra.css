@@ -1,0 +1,5 @@
+.md-typeset .hero { padding: 1.2rem 0 0.4rem; }
+.md-typeset .hero h1 { font-weight: 700; margin-bottom: 0.4rem; }
+.md-typeset .hero p.tagline { font-size: 1.15rem; opacity: 0.85; margin-top: 0; }
+.md-typeset .grid.cards > ul > li { border-radius: 10px; }
+.md-typeset table:not([class]) td code { white-space: nowrap; }

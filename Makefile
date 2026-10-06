@@ -13,7 +13,7 @@ test:
 lint:
 	test -z "$$(gofmt -l .)"
 	go vet ./...
-	shellcheck install.sh deploy/examples/*.sh
+	shellcheck install.sh get.sh contrib/setup-root.sh deploy/examples/*.sh
 
 install: build
 	sudo ./install.sh install
