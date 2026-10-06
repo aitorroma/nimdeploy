@@ -1,0 +1,30 @@
+{{!-- Welcome email for a provisioned order (Handlebars).
+      Used by [deploy.<name>.email] template = ".../welcome.html.hbs".
+      Available: Output (what the script wrote to $DEPLOY_OUTPUT, secrets removed),
+      Links (pwpush links for the secrets), Params, Payload (the order), ResourceID,
+      Deploy, Event, Host. A missing value renders empty. --}}
+<!doctype html>
+<html lang="es">
+<body style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; color: #222; line-height: 1.5">
+  <h2>¡Tu servicio está listo!</h2>
+  <p>Hola {{Payload.billing.first_name}},</p>
+  <p>Hemos preparado lo que compraste en el pedido <b>#{{ResourceID}}</b>:</p>
+  <ul>
+    {{#each Payload.line_items}}<li>{{name}}{{#if quantity}} × {{quantity}}{{/if}}</li>{{/each}}
+  </ul>
+
+  <table cellpadding="6" style="border-collapse: collapse">
+    {{#if Output.SITE_URL}}<tr><td>Tu web</td><td><a href="{{Output.SITE_URL}}">{{Output.SITE_URL}}</a></td></tr>{{/if}}
+    {{#if Output.PANEL_URL}}<tr><td>Panel</td><td><a href="{{Output.PANEL_URL}}">{{Output.PANEL_URL}}</a></td></tr>{{/if}}
+    {{#if Output.USERNAME}}<tr><td>Usuario</td><td><b>{{Output.USERNAME}}</b></td></tr>{{/if}}
+    {{#if Links.PASSWORD}}<tr><td>Contraseña</td><td><a href="{{Links.PASSWORD}}">Ver tu contraseña</a></td></tr>{{/if}}
+  </table>
+
+  {{#if Links.PASSWORD}}
+  <p style="font-size: 0.9em; color: #666">Por seguridad, el enlace de la contraseña solo se puede abrir unas pocas
+  veces y caduca en unos días. Guárdala en un lugar seguro y cámbiala al entrar.</p>
+  {{/if}}
+
+  <p>Si necesitas ayuda, responde a este correo.</p>
+</body>
+</html>

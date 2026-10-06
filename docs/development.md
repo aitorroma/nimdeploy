@@ -24,6 +24,8 @@ installer and the history.
 | `payments.go` | Stripe, Paddle and Lemon Squeezy webhooks |
 | `schedule.go` | cron parser and the scheduler |
 | `metrics.go` | `/metrics` in the Prometheus format |
+| `mail.go`, `hbs.go` | SMTP emails, outbox, Handlebars translated to Go templates |
+| `pwpush.go` | Password Pusher links |
 | `runner.go` | locking, queue, process groups, log files |
 | `history.go` | history rebuilt from log files |
 | `ci.go` | wait for GitHub Actions |

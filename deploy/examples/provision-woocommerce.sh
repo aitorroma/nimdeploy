@@ -15,7 +15,9 @@
 # Settings (export them in a wrapper, or edit below):
 #   STATE_DIR=~/.local/state/provision   where finished orders are remembered
 #   PROVISION=/home/deploy/bin/create-service.sh   what actually creates the service;
-#            it gets ORDER, PLAN and EMAIL in its environment
+#            it gets ORDER, PLAN and EMAIL in its environment, and can write what
+#            it created (SITE_URL=..., USERNAME=..., PASSWORD=...) to $DEPLOY_OUTPUT
+#            for the welcome email (see the docs, "Emails and secret links")
 set -Eeuo pipefail
 : "${DEPLOY_RESOURCE_ID:?run by nimdeploy}" "${DEPLOY_PAYLOAD_FILE:?run by nimdeploy}"
 command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }

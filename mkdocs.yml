@@ -98,6 +98,7 @@ nav:
       - Scheduled tasks: guides/scheduled.md
       - Hooks, health checks and rollback: guides/hooks-rollback.md
       - Metrics and alerts: guides/metrics.md
+      - Emails and secret links: guides/email.md
   - Reverse proxy:
       - proxy/index.md
       - nginx: proxy/nginx.md

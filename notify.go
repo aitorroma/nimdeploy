@@ -107,6 +107,22 @@ func (n *Notifier) Rejected(d *DeployConfig, t Trigger, reason string) {
 	}
 }
 
+// MailFailed tells the team that a deploy's email didn't go out.
+func (n *Notifier) MailFailed(d *DeployConfig, t Trigger, reason string, inOutbox bool) {
+	if n == nil || n.notify.Format == "" || n.notify.On == "never" {
+		return
+	}
+	what := "not sent: " + reason
+	if inOutbox {
+		what = "send failed (" + reason + "); kept in the outbox, resend with: nimdeploy mail retry"
+	}
+	st := State{Deploy: d.Name, Status: StatusFailed, Trigger: t.Source, Repository: d.Repository,
+		Event: t.Event, ResourceID: t.ResourceID, Commit: t.Commit, Error: "the deploy ran, but its email was " + what}
+	if err := n.send(st, false, "(see the deploy log)", nil); err != nil {
+		log.Printf("deploy=%s notification failed: %v", d.Name, err)
+	}
+}
+
 func (n *Notifier) shouldNotify(status string, recovered bool) bool {
 	if n.notify.Format == "" {
 		return false

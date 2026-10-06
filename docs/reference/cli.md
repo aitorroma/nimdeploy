@@ -7,6 +7,8 @@ nimdeploy send [flags] <url>          POST a signed JSON body to a generic webho
 nimdeploy [flags] serve               run the webhook server (what the service does)
 nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
 nimdeploy [flags] rollback [-to SHA] [-n] [-f] <deploy>
+nimdeploy [flags] mail test|send|retry
+nimdeploy [flags] pwpush [-views N] [-days N] [-note TEXT] < secret
 nimdeploy [flags] status [-json] [deploy]
 nimdeploy [flags] history [-n 20] [-json] [deploy]
 nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
@@ -64,6 +66,17 @@ nimdeploy rollback -to 9f1c2e7 shop
 ```
 
 See [Hooks, health checks and rollback](../guides/hooks-rollback.md#rollback).
+
+## mail and pwpush
+
+```bash
+nimdeploy mail test -to you@example.com          # check [smtp]
+nimdeploy mail send -to x@example.com -subject "…" -template t.html.hbs [-data file] [-secrets K]
+nimdeploy mail retry [-n]                        # resend what failed (outbox)
+printf '%s' "$secret" | nimdeploy pwpush -views 1   # print a Password Pusher link
+```
+
+See [Emails and secret links](../guides/email.md).
 
 ## send
 

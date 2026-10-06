@@ -344,6 +344,13 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	}
 
 	env := r.commandEnv(d, t)
+	// The command's results ($DEPLOY_OUTPUT), for the email or "nimdeploy mail".
+	output := runFile(path, "output")
+	if err := os.WriteFile(output, nil, 0o600); err != nil {
+		log.Printf("deploy=%s cannot create the output file: %v", d.Name, err)
+	} else {
+		env = append(env, "DEPLOY_OUTPUT="+output)
+	}
 	if len(t.Payload) > 0 && d.payloadFile {
 		payload := filepath.Join(filepath.Dir(path), "."+strings.TrimSuffix(st.Log, ".log")+".payload.json")
 		if err := os.WriteFile(payload, t.Payload, 0o600); err != nil {
@@ -419,6 +426,11 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 		status, exitCode, errMsg = r.withHooks(d, env, f, logf, cf)
 	}
 
+	if line := r.sendDeployEmail(d, t, status, runFile(path, "output"), notifier); line != "" {
+		fmt.Fprintln(f)
+		logf("%s", line)
+	}
+
 	finished := time.Now()
 	duration := formatDuration(finished.Sub(cmdStart))
 
@@ -442,6 +454,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 
 	_ = os.Remove(filepath.Join(filepath.Dir(path), "."+strings.TrimSuffix(st.Log, ".log")+".payload.json"))
+	_ = os.Remove(runFile(path, "output"))
 
 	r.mu.Lock()
 	r.running[t.lane]--
@@ -888,6 +901,11 @@ func (r *Runner) Shutdown(grace time.Duration) {
 }
 
 const errShutdownCanceled = "canceled: service shutting down"
+
+// runFile is a private per-run file next to the log: .<log name>.<kind>
+func runFile(logPath, kind string) string {
+	return filepath.Join(filepath.Dir(logPath), "."+strings.TrimSuffix(filepath.Base(logPath), ".log")+"."+kind)
+}
 
 // laneSep separates the deploy name from the queue_key value in a lane.
 const laneSep = "\x00"

@@ -32,6 +32,9 @@ const usage = `Usage:
                                         (secret in $NIMDEPLOY_SECRET; no config needed)
   nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
                                         start a deploy through the running server
+  nimdeploy [flags] mail test|send|retry  emails ([smtp]); see "nimdeploy mail"
+  nimdeploy [flags] pwpush [-views N] [-days N] < secret
+                                        print a Password Pusher link for a secret
   nimdeploy [flags] rollback [-to SHA] [-n] [-f] <deploy>
                                         deploy the last good commit again
   nimdeploy [flags] status [-json] [deploy]
@@ -120,6 +123,10 @@ func main() {
 		os.Exit(cliHistory(cfg, *envFile, args))
 	case "nginx":
 		os.Exit(cliNginx(cfg, args))
+	case "mail":
+		os.Exit(cliMail(cfg, *envFile, args))
+	case "pwpush":
+		os.Exit(cliPwPush(cfg, *envFile, args))
 	case "rollback":
 		os.Exit(cliRollback(cfg, *envFile, args))
 	case "woocommerce":

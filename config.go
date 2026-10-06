@@ -36,6 +36,8 @@ type Config struct {
 	Notify     NotifyConfig             `toml:"notify"`
 	GitHub     GitHubConfig             `toml:"github"`
 	Cloudflare CloudflareConfig         `toml:"cloudflare"`
+	SMTP       SMTPConfig               `toml:"smtp"`
+	PwPush     PwPushConfig             `toml:"pwpush"`
 	Deploy     map[string]*DeployConfig `toml:"deploy"`
 
 	path string // where it was loaded from, for scripts that call nimdeploy
@@ -162,6 +164,9 @@ type DeployConfig struct {
 	QueueMax    int    `toml:"queue_max"`
 	PayloadFile *bool  `toml:"payload_file"` // pass the request body as DEPLOY_PAYLOAD_FILE
 
+	// Email sent after the deploy (e.g. a welcome email with what it created).
+	Email *EmailConfig `toml:"email"`
+
 	// Payment providers (stripe, paddle, lemonsqueezy): event types that run.
 	Events []string `toml:"events"`
 
@@ -275,6 +280,14 @@ func (c *Config) validate() error {
 	if err := c.Notify.validate(); err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}
+	if c.SMTP != (SMTPConfig{}) {
+		if err := c.SMTP.validate(); err != nil {
+			return fmt.Errorf("smtp: %w", err)
+		}
+	}
+	if err := c.PwPush.validate(); err != nil {
+		return err
+	}
 	c.GitHub.commitStatus = c.GitHub.CommitStatus == nil || *c.GitHub.CommitStatus
 	if len(c.Deploy) == 0 {
 		return fmt.Errorf("no [deploy.<name>] sections defined")
@@ -288,6 +301,11 @@ func (c *Config) validate() error {
 		}
 		if len(d.WaitForCI) > 0 && c.GitHub.TokenEnv == "" {
 			return fmt.Errorf("deploy.%s: wait_for_ci needs [github] token_env (a token with Actions: read)", name)
+		}
+		if d.Email != nil {
+			if err := d.Email.validate(c.SMTP.Host != ""); err != nil {
+				return fmt.Errorf("deploy.%s.email: %w", name, err)
+			}
 		}
 		if d.CloudflareZoneID != "" && c.Cloudflare.APITokenEnv == "" {
 			return fmt.Errorf("deploy.%s: cloudflare_purge needs [cloudflare] api_token_env (a token with Zone → Cache Purge)", name)
@@ -655,6 +673,19 @@ func (c *Config) ResolveSecrets() error {
 			return err
 		}
 	}
+	if c.SMTP.UserEnv != "" {
+		if c.SMTP.user, err = get("smtp.user_env", c.SMTP.UserEnv); err != nil {
+			return err
+		}
+		if c.SMTP.password, err = get("smtp.password_env", c.SMTP.PasswordEnv); err != nil {
+			return err
+		}
+	}
+	if c.PwPush.TokenEnv != "" {
+		if c.PwPush.token, err = get("pwpush.token_env", c.PwPush.TokenEnv); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -671,7 +702,8 @@ func (c *Config) DeployNames() []string {
 // secretEnvNames lists every env var holding a secret, so they can be kept
 // out of deploy commands.
 func (c *Config) secretEnvNames() []string {
-	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv, c.Cloudflare.APITokenEnv}
+	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv, c.Cloudflare.APITokenEnv,
+		c.SMTP.UserEnv, c.SMTP.PasswordEnv, c.PwPush.TokenEnv}
 	for _, d := range c.Deploy {
 		names = append(names, d.SecretEnv, d.APIKeyEnv, d.APISecretEnv)
 	}

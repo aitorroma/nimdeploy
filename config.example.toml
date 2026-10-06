@@ -134,3 +134,20 @@ timeout = "10m"
 #secret_env = "STRIPE_WEBHOOK_SECRET"
 #events = ["checkout.session.completed"]
 #command = "/usr/local/bin/provision.sh"
+
+# Emails after a deploy (see "Emails and secret links"):
+#[smtp]
+#host = "email-smtp.eu-west-3.amazonaws.com"
+#port = 587
+#user_env = "SMTP_USER"
+#password_env = "SMTP_PASSWORD"
+#from = "Your Company <hello@example.com>"
+#[pwpush]
+#url = "https://eu.pwpush.com"      # or your own instance
+#expire_after_views = 3
+# and inside a deploy:
+#[deploy.orders.email]
+#to_from = "billing.email"
+#subject = "Your service is ready — order #{{ResourceID}}"
+#template = "/home/deploy/templates/welcome.html.hbs"
+#secrets = ["PASSWORD"]

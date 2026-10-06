@@ -45,6 +45,8 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
 - **Scheduled tasks** (`schedule = "*/15 * * * *"`): cron with logs, history,
   locks and notifications.
 - **Prometheus metrics** on `/metrics`: deploys, durations, queues, webhook answers.
+- **Welcome emails** after a deploy, from Handlebars templates, with what the
+  script or Ansible created and passwords as expiring **Password Pusher** links.
 - **Wait for CI** (GitHub Actions) and ✅/❌ **commit statuses**.
 - **Notifications** to Slack, Discord, Telegram or any URL, failures and recoveries.
 - **Behind any proxy**: nginx, HestiaCP, Caddy, Traefik, Cloudflare (proxied or Tunnel), unix socket.

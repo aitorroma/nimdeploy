@@ -105,6 +105,15 @@ Kubernetes: a VPS, an EC2 instance, a HestiaCP box.
 
     [:octicons-arrow-right-24: Hooks and rollback](guides/hooks-rollback.md)
 
+-   :material-email-fast-outline:{ .lg } __Welcome emails__
+
+    ---
+
+    What your script or playbook created, emailed to the customer with a
+    Handlebars template; passwords go as expiring Password Pusher links.
+
+    [:octicons-arrow-right-24: Emails and secret links](guides/email.md)
+
 -   :material-chart-line:{ .lg } __Prometheus metrics__
 
     ---

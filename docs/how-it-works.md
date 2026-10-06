@@ -77,6 +77,7 @@ sequenceDiagram
 | `DEPLOY_DELIVERY` | the provider's delivery ID |
 | `DEPLOY_EVENT`, `DEPLOY_RESOURCE_ID` | non-git events, e.g. `order.updated` and `1234` |
 | `DEPLOY_PAYLOAD_FILE` | generic and WooCommerce: the request body, in a `600` file deleted after the run |
+| `DEPLOY_OUTPUT` | an empty `600` file for the command's results (for the [email](guides/email.md)), deleted after the run |
 | `NIMDEPLOY`, `NIMDEPLOY_CONFIG` | nimdeploy's path and config, for scripts that call it (e.g. `woocommerce note`) |
 
 Plus the deploy's own `env` entries, and its [params](guides/generic.md#params)

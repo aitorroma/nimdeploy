@@ -62,6 +62,28 @@ See [Notifications](../guides/notifications.md).
 | `commit_status` | `true` | `false`: use the token only for `wait_for_ci` |
 | `api_url` | `https://api.github.com` | GitHub Enterprise Server API URL |
 
+## `[smtp]`
+
+| Key | Default | |
+|---|---|---|
+| `host` | – | SMTP server |
+| `port` | `587` (`465` with `tls = "tls"`) | |
+| `tls` | `starttls` | `starttls`, `tls`, or `none` (only for a relay on localhost) |
+| `user_env`, `password_env` | – | env vars with the credentials |
+| `from` | – | `Name <address>` |
+
+## `[pwpush]`
+
+| Key | Default | |
+|---|---|---|
+| `url` | `https://eu.pwpush.com` | Password Pusher instance (API v2) |
+| `token_env` | – | API token (optional if the instance allows anonymous pushes) |
+| `expire_after_views` | `3` | |
+| `expire_after_days` | instance default | open source instances |
+| `expire_after_duration` | instance default | pwpush.com / Pro: their duration index 0-17 |
+| `retrieval_step` | `true` | extra click before showing the secret (protects against link scanners) |
+| `deletable_by_viewer` | `true` | |
+
 ## `[cloudflare]`
 
 | Key | Default | |
@@ -102,6 +124,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `rollback_on_failure` | `false` | git deploys: redeploy the last good commit when a deploy fails |
 | `cloudflare_zone_id`, `cloudflare_purge` | – | purge `["everything"]` or URLs after a successful deploy (needs `[cloudflare]`) |
 | `events` | – | stripe, paddle, lemonsqueezy: event types that run ([details](../guides/payments.md)) |
+| `email` | – | table: `on`, `to`, `to_from`, `bcc`, `subject`, `template`, `secrets`, `once` ([details](../guides/email.md)) |
 | `payload_file` | `true` for generic, woocommerce and payments | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |
 
 WooCommerce adds `store_url`, `webhook_url`, `api_key_env`, `api_secret_env`,
