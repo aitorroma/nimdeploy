@@ -103,20 +103,20 @@ a NetworkPolicy). Main values:
 On the hub, create the agent. Its token is printed once:
 
 ```bash
-docker compose exec hub nimdeploy hub agent add squirrel-stage
-# Kubernetes: kubectl -n nimdeploy exec deploy/hub-nimdeploy-hub -- nimdeploy hub agent add squirrel-stage
+docker compose exec hub nimdeploy hub agent add acme-stage
+# Kubernetes: kubectl -n nimdeploy exec deploy/hub-nimdeploy-hub -- nimdeploy hub agent add acme-stage
 ```
 
 On the server, add it to the config, and the token to `secrets.env`:
 
 ```toml title="config.toml"
 [labels]
-client = "Squirrel Media"
+client = "Acme"
 environment = "stage"
 
 [hub]
 url = "https://hub.example.com"
-agent = "squirrel-stage"           # default: the short hostname
+agent = "acme-stage"           # default: the short hostname
 token_env = "NIMDEPLOY_HUB_TOKEN"
 # send_log_tail = 20               # log lines sent with a failed deploy (0-500)
 # heartbeat = "1m"

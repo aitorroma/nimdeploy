@@ -16,7 +16,7 @@ func TestLabels(t *testing.T) {
 	e := newEnv(t, `echo "client=$DEPLOY_LABEL_CLIENT env=$DEPLOY_LABEL_ENVIRONMENT component=$DEPLOY_LABEL_COMPONENT"; exit 1`, `[server]
 api_token_env = "TEST_API_TOKEN"
 [labels]
-client = "Squirrel Media"
+client = "Acme Corp"
 environment = "production"
 component = "global"
 [notify]
@@ -25,7 +25,7 @@ on = "always"
 url_env = "TEST_NOTIFY_URL"
 [deploy.agency.labels]
 component = "frontend"
-url = "https://squirrelmedia.es/agency"
+url = "https://acme.example/agency"
 [deploy.other]
 path = "/hooks/other"
 repository = "acme/other"
@@ -34,13 +34,13 @@ command = "/bin/true"
 [deploy.other.labels]
 environment = "stage"
 `)
-	want := map[string]string{"client": "Squirrel Media", "environment": "production", "component": "frontend", "url": "https://squirrelmedia.es/agency"}
+	want := map[string]string{"client": "Acme Corp", "environment": "production", "component": "frontend", "url": "https://acme.example/agency"}
 	if l := e.cfg.Deploy["agency"].labels; formatLabels(l) != formatLabels(want) {
 		t.Fatalf("merged %v", l)
 	}
 
 	// A deploy that never ran already shows its labels.
-	if st := e.runner.State("agency"); st.Labels["client"] != "Squirrel Media" {
+	if st := e.runner.State("agency"); st.Labels["client"] != "Acme Corp" {
 		t.Fatalf("never-run state %+v", st)
 	}
 
@@ -49,7 +49,7 @@ environment = "stage"
 	if st.Labels["component"] != "frontend" {
 		t.Fatalf("state labels %v", st.Labels)
 	}
-	if out := readLatest(t, e, "agency"); !strings.Contains(out, "client=Squirrel Media env=production component=frontend") {
+	if out := readLatest(t, e, "agency"); !strings.Contains(out, "client=Acme Corp env=production component=frontend") {
 		t.Errorf("script env:\n%s", out)
 	}
 
@@ -63,7 +63,7 @@ environment = "stage"
 		t.Fatal("no notification")
 	}
 	text, _ := msgs[0].body["text"].(string)
-	if !strings.HasPrefix(text, "❌ [PRODUCTION] Squirrel Media · production · agency deploy FAILED") || !strings.Contains(text, "https://squirrelmedia.es/agency") {
+	if !strings.HasPrefix(text, "❌ [PRODUCTION] Acme Corp · production · agency deploy FAILED") || !strings.Contains(text, "https://acme.example/agency") {
 		t.Errorf("message %q", text)
 	}
 
@@ -77,16 +77,16 @@ environment = "stage"
 	if rec := e.request(http.MethodGet, "/status?label=bad", testToken, ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad filter: %d", rec.Code)
 	}
-	if h, _ := e.runner.History("agency", 1); len(h) != 1 || h[0].Labels["client"] != "Squirrel Media" {
+	if h, _ := e.runner.History("agency", 1); len(h) != 1 || h[0].Labels["client"] != "Acme Corp" {
 		t.Errorf("history labels %+v", h)
 	}
 
 	// Metrics: one info line per deploy.
 	body := e.request(http.MethodGet, "/metrics", testToken, "").Body.String()
-	if !strings.Contains(body, `nimdeploy_deploy_info{deploy="agency",client="Squirrel Media",component="frontend",environment="production",url="https://squirrelmedia.es/agency"} 1`) {
+	if !strings.Contains(body, `nimdeploy_deploy_info{deploy="agency",client="Acme Corp",component="frontend",environment="production",url="https://acme.example/agency"} 1`) {
 		t.Errorf("metrics:\n%s", body)
 	}
-	if !strings.Contains(body, `nimdeploy_deploy_info{deploy="other",client="Squirrel Media",component="global",environment="stage"} 1`) {
+	if !strings.Contains(body, `nimdeploy_deploy_info{deploy="other",client="Acme Corp",component="global",environment="stage"} 1`) {
 		t.Errorf("metrics other")
 	}
 }

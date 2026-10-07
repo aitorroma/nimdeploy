@@ -60,7 +60,7 @@ func TestHubEndToEnd(t *testing.T) {
 	e := newEnv(t, `echo deploying; echo "step 2"; exit 1`, `[server]
 api_token_env = "TEST_API_TOKEN"
 [labels]
-client = "Squirrel Media"
+client = "Acme Corp"
 environment = "stage"
 [hub]
 url = "`+srv.URL+`"
@@ -80,7 +80,7 @@ heartbeat = "10s"
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if len(deps) != 1 || deps[0].State.Status != StatusFailed || deps[0].Labels["client"] != "Squirrel Media" || deps[0].Repository != "acme/agency" {
+	if len(deps) != 1 || deps[0].State.Status != StatusFailed || deps[0].Labels["client"] != "Acme Corp" || deps[0].Repository != "acme/agency" {
 		t.Fatalf("hub deploys %+v", deps)
 	}
 	evs, _ := h.store.events(ctx, "stage-1", "agency", hubEventDeployDone, 1)
@@ -97,11 +97,11 @@ heartbeat = "10s"
 		t.Errorf("anonymous dashboard: %d", code)
 	}
 	code, body := hubGet(t, srv, "/", testHubToken)
-	if code != 200 || !strings.Contains(body, "Squirrel Media") || !strings.Contains(body, `class="chip s-failed`) {
+	if code != 200 || !strings.Contains(body, "Acme Corp") || !strings.Contains(body, `class="chip s-failed`) {
 		t.Errorf("overview %d:\n%s", code, body)
 	}
 	code, body = hubGet(t, srv, "/d/stage-1/agency", testHubToken)
-	if code != 200 || !strings.Contains(body, "step 2") || !strings.Contains(body, "Squirrel Media · stage · agency") {
+	if code != 200 || !strings.Contains(body, "step 2") || !strings.Contains(body, "Acme Corp · stage · agency") {
 		t.Errorf("detail %d:\n%s", code, body)
 	}
 	if code, body := hubGet(t, srv, "/agents", testHubToken); code != 200 || !strings.Contains(body, "a-online") {
@@ -127,7 +127,7 @@ heartbeat = "10s"
 	_, body = hubGet(t, srv, "/metrics", testHubToken)
 	for _, want := range []string{
 		`nimdeploy_hub_agent_up{agent="stage-1",version="` + version + `"} 1`,
-		`nimdeploy_hub_deploy_info{agent="stage-1",deploy="agency",client="Squirrel Media",environment="stage"} 1`,
+		`nimdeploy_hub_deploy_info{agent="stage-1",deploy="agency",client="Acme Corp",environment="stage"} 1`,
 		`nimdeploy_hub_deploy_status{agent="stage-1",deploy="agency",status="failed"} 1`,
 	} {
 		if !strings.Contains(body, want) {

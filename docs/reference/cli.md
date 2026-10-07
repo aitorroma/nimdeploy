@@ -117,9 +117,9 @@ nimdeploy history -n 50 agency
 
 ```text
 DEPLOY  STATUS   STARTED              DURATION  TRIGGER  COMMIT   BY         LOG                         NOTE
-lotes   skipped  2026-09-30 10:12:03  2m10s     webhook  a41f09c  ana        20260930-101203-7f3a21.log  CI failed: linter=success tests=failure
-lotes   success  2026-09-29 15:54:23  50s       webhook  05e8108  aitorroma  20260929-155423-09c5ee.log
-lotes   success  2026-09-29 15:49:13  50s       manual   -        root       20260929-154913-c49e52.log
+shop    skipped  2026-09-30 10:12:03  2m10s     webhook  a41f09c  ana        20260930-101203-7f3a21.log  CI failed: linter=success tests=failure
+shop    success  2026-09-29 15:54:23  50s       webhook  05e8108  aitorroma  20260929-155423-09c5ee.log
+shop    success  2026-09-29 15:49:13  50s       manual   -        root       20260929-154913-c49e52.log
 ```
 
 Rebuilt from the log files themselves, so it survives restarts and covers

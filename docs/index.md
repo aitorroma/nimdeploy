@@ -154,7 +154,7 @@ nimdeploy runs any command. The release ships tested scripts for common stacks:
 $ nimdeploy status
 DEPLOY           STATUS               STARTED              DURATION  COMMIT   BY    LOG
 agency-backend   success              2026-10-06 10:12:03  48s       a41f09c  ana   20261006-101203-7f3a21.log
-agency-frontend  running (+1 queued)  2026-10-06 10:15:40  -         c93a11f  marc  20261006-101540-c93a11.log
+agency-frontend  running (+1 queued)  2026-10-06 10:15:40  -         c93a11f  leo   20261006-101540-c93a11.log
 ```
 
 nimdeploy is open source (MIT) and maintained by [Nimbox360](https://nimbox360.com).

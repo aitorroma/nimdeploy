@@ -156,7 +156,7 @@ who it was:
 
 ```toml
 [deploy.shop.when]
-"head_commit.author.username" = ["ana", "marc"]
+"head_commit.author.username" = ["ana", "leo"]
 [deploy.shop.params]
 AUTHOR = { from = "head_commit.author.username", required = true }
 ```
