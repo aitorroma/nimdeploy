@@ -53,10 +53,15 @@ func (n *Notifier) CommitStatus(d *DeployConfig, t Trigger, state, description s
 		description = description[:137] + "..."
 	}
 	endpoint := fmt.Sprintf("%s/repos/%s/statuses/%s", strings.TrimRight(n.github.APIURL, "/"), t.Repository, t.Commit)
+	context := "nimdeploy/" + d.Name
+	if env := d.labels["environment"]; env != "" {
+		// stage and production deploying the same repository don't overwrite each other's ✅.
+		context = "nimdeploy/" + env + "/" + d.Name
+	}
 	body := map[string]string{
 		"state":       state,
 		"description": description,
-		"context":     "nimdeploy/" + d.Name,
+		"context":     context,
 	}
 	headers := map[string]string{
 		"Authorization":        "Bearer " + n.github.token,
@@ -123,6 +128,15 @@ func (n *Notifier) MailFailed(d *DeployConfig, t Trigger, reason string, inOutbo
 	}
 }
 
+// isProduction recognizes the usual names for a production environment.
+func isProduction(env string) bool {
+	switch strings.ToLower(env) {
+	case "prod", "production", "produccion", "producción", "pro", "live":
+		return true
+	}
+	return false
+}
+
 func (n *Notifier) shouldNotify(status string, recovered bool) bool {
 	if n.notify.Format == "" {
 		return false
@@ -164,15 +178,22 @@ func (n *Notifier) send(st State, recovered bool, logPath string, tail []string)
 
 func (n *Notifier) message(st State, recovered bool, logPath string, tail []string, fences bool) string {
 	var b strings.Builder
+	title := labelTitle(st.Labels, st.Deploy)
+	if env := st.Labels["environment"]; env != "" && isProduction(env) {
+		title = "[" + strings.ToUpper(env) + "] " + title
+	}
 	switch {
 	case recovered:
-		fmt.Fprintf(&b, "✅ %s deploy recovered on %s\n", st.Deploy, n.host)
+		fmt.Fprintf(&b, "✅ %s deploy recovered on %s\n", title, n.host)
 	case st.Status == StatusSuccess:
-		fmt.Fprintf(&b, "✅ %s deployed on %s\n", st.Deploy, n.host)
+		fmt.Fprintf(&b, "✅ %s deployed on %s\n", title, n.host)
 	case st.Status == StatusSkipped:
-		fmt.Fprintf(&b, "⏭️ %s NOT deployed on %s\n", st.Deploy, n.host)
+		fmt.Fprintf(&b, "⏭️ %s NOT deployed on %s\n", title, n.host)
 	default:
-		fmt.Fprintf(&b, "❌ %s deploy FAILED on %s\n", st.Deploy, n.host)
+		fmt.Fprintf(&b, "❌ %s deploy FAILED on %s\n", title, n.host)
+	}
+	if u := st.Labels["url"]; u != "" {
+		fmt.Fprintf(&b, "%s\n", u)
 	}
 	var parts []string
 	switch {

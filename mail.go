@@ -178,6 +178,7 @@ type mailData struct {
 	Output                                                   map[string]string // script results, secrets removed
 	Links                                                    map[string]string // pwpush links for the secrets
 	Params                                                   map[string]string
+	Labels                                                   map[string]string
 	Payload                                                  any // the webhook body (order, event...)
 }
 
@@ -454,7 +455,7 @@ func (r *Runner) sendDeployEmail(d *DeployConfig, t Trigger, status, outputPath 
 	if err != nil {
 		return "email: " + err.Error()
 	}
-	data := mailData{Deploy: d.Name, Status: status, Trigger: t.Source, Event: t.Event, ResourceID: t.ResourceID,
+	data := mailData{Labels: copyLabels(d.labels), Deploy: d.Name, Status: status, Trigger: t.Source, Event: t.Event, ResourceID: t.ResourceID,
 		Commit: t.Commit, Output: output, Params: map[string]string{}}
 	data.Host, _ = os.Hostname()
 	for _, p := range t.Params {

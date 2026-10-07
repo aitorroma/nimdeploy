@@ -473,9 +473,16 @@ func ignore(w http.ResponseWriter, d *DeployConfig, delivery, reason string) {
 }
 
 func (s *Server) handleStatusAll(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseLabelFilter(r.URL.Query()["label"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	all := map[string]State{}
 	for _, name := range s.cfg.DeployNames() {
-		all[name] = s.runner.State(name)
+		if st := s.runner.State(name); filter.match(st.Labels) {
+			all[name] = st
+		}
 	}
 	writeJSON(w, http.StatusOK, all)
 }

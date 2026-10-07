@@ -173,7 +173,15 @@ func followLog(c *client, name, path, logName string) int {
 func cliStatus(cfg *Config, envFile string, args []string) int {
 	fset := flag.NewFlagSet("status", flag.ExitOnError)
 	asJSON := fset.Bool("json", false, "print raw JSON")
+	wide := fset.Bool("wide", false, "also show each deploy's labels")
+	var labelSpecs listFlag
+	fset.Var(&labelSpecs, "l", "only deploys with this label, key=value (repeatable)")
 	fset.Parse(args)
+	filter, err := parseLabelFilter(labelSpecs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	c, err := newClient(cfg, envFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -191,6 +199,11 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	for name, st := range states {
+		if !filter.match(st.Labels) {
+			delete(states, name)
+		}
 	}
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -215,6 +228,9 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 	}
 	if withParams {
 		header += "\tPARAMS"
+	}
+	if *wide {
+		header += "\tLABELS"
 	}
 	fmt.Fprintln(tw, header)
 	for _, name := range cfg.DeployNames() {
@@ -243,6 +259,9 @@ func cliStatus(cfg *Config, envFile string, args []string) int {
 		}
 		if withParams {
 			line += "\t" + dash(formatParams(st.Params))
+		}
+		if *wide {
+			line += "\t" + dash(formatLabels(st.Labels))
 		}
 		fmt.Fprintln(tw, line)
 	}
@@ -348,7 +367,14 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 	fset := flag.NewFlagSet("history", flag.ExitOnError)
 	limit := fset.Int("n", 20, "number of deploys to show")
 	asJSON := fset.Bool("json", false, "print raw JSON")
+	var labelSpecs listFlag
+	fset.Var(&labelSpecs, "l", "only deploys with this label, key=value (repeatable)")
 	fset.Parse(args)
+	filter, ferr := parseLabelFilter(labelSpecs)
+	if ferr != nil {
+		fmt.Fprintln(os.Stderr, ferr)
+		return 2
+	}
 	names := cfg.DeployNames()
 	if fset.NArg() > 0 {
 		names = fset.Args()[:1]
@@ -365,6 +391,9 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 
 	var all []State
 	for _, name := range names {
+		if d := cfg.Deploy[name]; !filter.match(d.labels) {
+			continue
+		}
 		var h []State
 		if _, err := c.do(http.MethodGet, fmt.Sprintf("/history/%s?limit=%d", name, *limit), nil, &h); err != nil {
 			fmt.Fprintln(os.Stderr, err)

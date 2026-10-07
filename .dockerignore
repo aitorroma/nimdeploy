@@ -1,0 +1,9 @@
+# Only what "go build" needs (sources and the files install.go embeds).
+*
+!go.mod
+!go.sum
+!*.go
+!config.example.toml
+!deploy/secrets.env.example
+!deploy/nimdeploy-user.service
+*_test.go

@@ -4,7 +4,7 @@
 |---|---|
 | `POST <path>` | webhook. `202` started or queued · `200` ping, ignored (other branch, `when` not met) or duplicate · `400` invalid JSON or invalid param · `401` bad signature or token · `409` running and `queue = false` |
 | `POST /deploy/{name}` | manual deploy, optional body `{"commit":"...","user":"...","params":{"NAME":"value"}}`. Token required |
-| `GET /status` | state of every deploy. Token required if `api_token_env` is set |
+| `GET /status` | state of every deploy (`?label=key=value` filters, repeatable). Token required if `api_token_env` is set |
 | `GET /status/{name}` | state of one deploy. Same |
 | `GET /history/{name}?limit=N` | past deploys from the kept logs, newest first. Same |
 | `POST /rollback/{name}` | redeploy the last good commit, or `{"commit":"..."}`. Token required |

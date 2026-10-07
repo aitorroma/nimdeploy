@@ -11,6 +11,13 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # libSQL server for the hub's tests.
+      sqld:
+        image: ghcr.io/tursodatabase/libsql-server:v0.24.33
+        ports: ["8080:8080"]
+    env:
+      NIMDEPLOY_TEST_LIBSQL: http://127.0.0.1:8080
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -22,3 +29,18 @@ jobs:
         run: make test
       - name: Build
         run: make build && ./nimdeploy -version
+
+  hub-packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Helm chart
+        run: |
+          helm lint deploy/helm/nimdeploy-hub
+          helm template hub deploy/helm/nimdeploy-hub > /dev/null
+          helm template hub deploy/helm/nimdeploy-hub --set sqld.enabled=false,externalDatabase.url=libsql://x.turso.io,externalDatabase.token=t,ingress.enabled=true > /dev/null
+      - name: Docker image
+        run: docker build --build-arg VERSION=ci -t nimdeploy:ci . && docker run --rm nimdeploy:ci -version
+      - name: Compose file
+        run: NIMDEPLOY_HUB_TOKEN=x docker compose -f deploy/hub/docker-compose.yml config -q

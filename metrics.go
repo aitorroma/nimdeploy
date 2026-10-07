@@ -117,6 +117,9 @@ func (r *Runner) gauges(names []string) map[string]deployGauges {
 		if at, ok := r.nextRun[name]; ok {
 			g.state.NextRun = &at
 		}
+		if d, ok := r.cfg.Deploy[name]; ok {
+			g.state.Labels = copyLabels(d.labels)
+		}
 		out[name] = g
 	}
 	return out
@@ -139,6 +142,17 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(&b, "nimdeploy_build_info{version=%q,goversion=%q} 1\n", version, runtime.Version())
 	family("nimdeploy_start_time_seconds", "gauge", "When the service started (Unix time).")
 	fmt.Fprintf(&b, "nimdeploy_start_time_seconds %s\n", ts(m.started))
+
+	family("nimdeploy_deploy_info", "gauge", "Labels of each deploy (client, environment...), always 1: join it with the other metrics on deploy.")
+	for _, name := range names {
+		labels := g[name].state.Labels
+		keys := sortedKeys(labels)
+		parts := []string{fmt.Sprintf("deploy=%q", name)}
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%q", k, labels[k]))
+		}
+		fmt.Fprintf(&b, "nimdeploy_deploy_info{%s} 1\n", strings.Join(parts, ","))
+	}
 
 	family("nimdeploy_deploys_total", "counter", "Finished deploys by result since the service started.")
 	for _, name := range names {

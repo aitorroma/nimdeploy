@@ -47,6 +47,11 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
 - **Prometheus metrics** on `/metrics`: deploys, durations, queues, webhook answers.
 - **Welcome emails** after a deploy, from Handlebars templates, with what the
   script or Ansible created and passwords as expiring **Password Pusher** links.
+- **Labels** (`client`, `environment`…) in notifications, commit statuses,
+  `/status`, metrics and the scripts' environment.
+- **Central hub** in the same binary (`nimdeploy hub serve`): every server
+  sends its deploys, signed, to one dashboard by client and environment, with
+  an API and metrics. Data in libSQL; Docker Compose and a Helm chart included.
 - **Wait for CI** (GitHub Actions) and ✅/❌ **commit statuses**.
 - **Notifications** to Slack, Discord, Telegram or any URL, failures and recoveries.
 - **Behind any proxy**: nginx, HestiaCP, Caddy, Traefik, Cloudflare (proxied or Tunnel), unix socket.

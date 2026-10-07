@@ -307,5 +307,6 @@ func (d mailData) toHandlebarsData() map[string]any {
 		"ResourceID": d.ResourceID, "Commit": d.Commit, "Host": d.Host,
 		"Output": toAny(d.Output), "Links": toAny(d.Links), "Params": toAny(d.Params),
 		"Payload": d.Payload,
+		"Labels":  toAny(d.Labels),
 	}
 }

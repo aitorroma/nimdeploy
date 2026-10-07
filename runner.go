@@ -80,25 +80,26 @@ type Trigger struct {
 // State is the last known state of a deploy, exposed on /status and
 // persisted to <logdir>/<deploy>/status.json.
 type State struct {
-	Deploy     string      `json:"deploy"`
-	Status     string      `json:"status"`
-	Trigger    string      `json:"trigger,omitempty"`
-	Provider   string      `json:"provider,omitempty"`
-	StartedAt  *time.Time  `json:"started_at,omitempty"`
-	FinishedAt *time.Time  `json:"finished_at,omitempty"`
-	Duration   string      `json:"duration,omitempty"`
-	Delivery   string      `json:"delivery,omitempty"`
-	Repository string      `json:"repository,omitempty"`
-	Branch     string      `json:"branch,omitempty"`
-	Commit     string      `json:"commit,omitempty"`
-	Pusher     string      `json:"pusher,omitempty"`
-	Event      string      `json:"event,omitempty"`
-	ResourceID string      `json:"resource_id,omitempty"`
-	Params     []Param     `json:"params,omitempty"`
-	ExitCode   *int        `json:"exit_code,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	Log        string      `json:"log,omitempty"`
-	Queued     *QueuedInfo `json:"queued,omitempty"`
+	Deploy     string            `json:"deploy"`
+	Status     string            `json:"status"`
+	Trigger    string            `json:"trigger,omitempty"`
+	Provider   string            `json:"provider,omitempty"`
+	StartedAt  *time.Time        `json:"started_at,omitempty"`
+	FinishedAt *time.Time        `json:"finished_at,omitempty"`
+	Duration   string            `json:"duration,omitempty"`
+	Delivery   string            `json:"delivery,omitempty"`
+	Repository string            `json:"repository,omitempty"`
+	Branch     string            `json:"branch,omitempty"`
+	Commit     string            `json:"commit,omitempty"`
+	Pusher     string            `json:"pusher,omitempty"`
+	Event      string            `json:"event,omitempty"`
+	ResourceID string            `json:"resource_id,omitempty"`
+	Params     []Param           `json:"params,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	ExitCode   *int              `json:"exit_code,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	Log        string            `json:"log,omitempty"`
+	Queued     *QueuedInfo       `json:"queued,omitempty"`
 	// NextRun is the next scheduled run (deploys with a schedule).
 	NextRun *time.Time `json:"next_run,omitempty"`
 }
@@ -149,6 +150,7 @@ type Runner struct {
 	stopSched    chan struct{}
 	schedDone    chan struct{}
 	metrics      *metrics
+	hub          *hubAgent                     // nil without [hub]
 	inflight     map[string]map[string]Trigger // queue_mode "all": running triggers per deploy, by log file
 	seen         *deliveryCache
 }
@@ -176,6 +178,9 @@ func NewRunner(cfg *Config, notifier *Notifier) (*Runner, error) {
 		seen:         newDeliveryCache(seenDeliveries),
 	}
 	r.SetConfig(cfg, notifier)
+	if cfg.Hub.URL != "" {
+		r.hub = newHubAgent(r, cfg.Hub, cfg.Logging.Directory)
+	}
 	r.mu.Lock()
 	r.resumeLocked()
 	r.mu.Unlock()
@@ -201,6 +206,9 @@ func (r *Runner) SetConfig(cfg *Config, notifier *Notifier) {
 			r.loadState(name)
 			r.loadQueue(cfg.Deploy[name])
 		}
+	}
+	if r.hub != nil && cfg.Hub.URL != "" {
+		r.hub.setConfig(cfg.Hub)
 	}
 	select {
 	case r.reload <- struct{}{}:
@@ -244,6 +252,9 @@ func (r *Runner) State(name string) State {
 	}
 	if at, ok := r.nextRun[name]; ok {
 		st.NextRun = &at
+	}
+	if d, ok := r.cfg.Deploy[name]; ok {
+		st.Labels = copyLabels(d.labels) // current config, also for deploys that never ran
 	}
 	return st
 }
@@ -329,6 +340,7 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 		Event:      t.Event,
 		ResourceID: t.ResourceID,
 		Params:     t.Params,
+		Labels:     copyLabels(d.labels),
 		Log:        filepath.Base(path),
 	}
 	r.running[t.lane]++
@@ -364,6 +376,8 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	cf := r.cfg.Cloudflare
 
 	log.Printf("deploy=%s status=started trigger=%s delivery=%s commit=%s log=%s", d.Name, t.Source, t.Delivery, t.Commit, st.Log)
+	started := copyState(st)
+	r.hub.emit(hubEvent{Type: hubEventDeployStart, Deploy: d.Name, State: &started})
 	r.wg.Add(1)
 	go r.run(d, t, env, f, path, st, start, notifier, retain, cf)
 	return st, nil
@@ -490,6 +504,13 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	r.mu.Unlock()
 
 	r.metrics.finished(d.Name, status, finished.Sub(cmdStart))
+	if r.hub != nil {
+		ev := hubEvent{Type: hubEventDeployDone, Deploy: d.Name, State: &final}
+		if n := r.hub.config().logTail; n > 0 && status != StatusSuccess {
+			ev.LogTail = readTail(path, n)
+		}
+		r.hub.emit(ev)
+	}
 	notifier.Finished(d, t, final, recovered, path, superseded)
 
 	if status == StatusFailed && d.RollbackOnFailure && t.Source != TriggerRollback && errMsg != errShutdownCanceled {
@@ -724,6 +745,9 @@ func (r *Runner) notifyRejected(d *DeployConfig, t Trigger, reason string) {
 	n := r.notifier
 	r.mu.Unlock()
 	go n.Rejected(d, t, reason)
+	st := State{Deploy: d.Name, Status: StatusSkipped, Trigger: t.Source, Provider: t.Provider, Repository: d.Repository,
+		Event: t.Event, ResourceID: t.ResourceID, Delivery: t.Delivery, Labels: copyLabels(d.labels), Error: "rejected: " + reason}
+	r.hub.emit(hubEvent{Type: hubEventRejected, Deploy: d.Name, State: &st, Reason: reason})
 }
 
 // pendingCountLocked counts the queued runs of every lane of a deploy.
@@ -835,6 +859,7 @@ func (r *Runner) commandEnv(d *DeployConfig, t Trigger) []string {
 		}
 		env = append(env, kv)
 	}
+	env = append(env, labelEnv(d.labels)...)
 	env = append(env, d.Env...)
 	for _, p := range t.Params {
 		env = append(env, p.Name+"="+p.Value)
@@ -897,6 +922,7 @@ func (r *Runner) Shutdown(grace time.Duration) {
 		r.cancel()
 		<-done
 	}
+	r.hub.shutdown() // last attempt to send what is queued
 	r.cancel()
 }
 
@@ -947,6 +973,7 @@ func copyState(st *State) State {
 		c.Queued = &q
 	}
 	c.Params = append([]Param(nil), st.Params...)
+	c.Labels = copyLabels(st.Labels)
 	return c
 }
 

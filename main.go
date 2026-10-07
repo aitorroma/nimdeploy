@@ -44,6 +44,9 @@ const usage = `Usage:
   nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
   nimdeploy [flags] woocommerce add|register|status|replay|note
                                         deploy from WooCommerce events (orders...)
+  nimdeploy hub serve|agent add|list|revoke
+                                        central console for every server's events
+                                        (no config file; see "nimdeploy hub -h")
 
 Flags:
 `
@@ -77,6 +80,8 @@ func main() {
 			os.Exit(cliUninstall(args[1:]))
 		case "send":
 			os.Exit(cliSend(args[1:]))
+		case "hub":
+			os.Exit(cliHub(args[1:]))
 		}
 	}
 

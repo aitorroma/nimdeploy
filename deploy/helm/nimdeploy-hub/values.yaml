@@ -1,0 +1,73 @@
+image:
+  repository: ghcr.io/aitorroma/nimdeploy
+  tag: ""            # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+hub:
+  # Dashboard/API token (>= 16 chars). Leave empty to generate one on install
+  # (kept on upgrades), or point existingSecret at a Secret with key "token".
+  token: ""
+  existingSecret: ""
+  # Header set by an authenticating proxy in front of the Ingress (e.g.
+  # Cf-Access-Authenticated-User-Email). Only if nothing else can reach the hub.
+  trustedHeader: ""
+  retainDays: 90
+  extraEnv: []
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+# The database. With sqld.enabled the chart runs libSQL server (sqld) as a
+# StatefulSet with a volume; otherwise set externalDatabase (e.g. Turso).
+sqld:
+  enabled: true
+  image:
+    repository: ghcr.io/tursodatabase/libsql-server
+    tag: v0.24.33
+    pullPolicy: IfNotPresent
+  persistence:
+    size: 2Gi
+    storageClass: ""
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 512Mi}
+
+externalDatabase:
+  url: ""            # libsql://<db>-<org>.turso.io or https://...
+  token: ""          # or existingSecret with key "token"
+  existingSecret: ""
+
+service:
+  type: ClusterIP
+  port: 9100
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: hub.example.com
+  tls: []            # - secretName: hub-tls
+                     #   hosts: [hub.example.com]
+
+# Only the hub may talk to sqld.
+networkPolicy:
+  enabled: true
+
+serviceMonitor:
+  enabled: false     # needs the Prometheus Operator; scrapes /metrics with the hub token
+  interval: 60s
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

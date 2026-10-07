@@ -37,8 +37,12 @@ type Config struct {
 	GitHub     GitHubConfig             `toml:"github"`
 	Cloudflare CloudflareConfig         `toml:"cloudflare"`
 	SMTP       SMTPConfig               `toml:"smtp"`
+	Hub        HubConfig                `toml:"hub"`
 	PwPush     PwPushConfig             `toml:"pwpush"`
 	Deploy     map[string]*DeployConfig `toml:"deploy"`
+
+	// Labels apply to every deploy (client, environment...); see labels.go.
+	Labels map[string]string `toml:"labels"`
 
 	path string // where it was loaded from, for scripts that call nimdeploy
 }
@@ -164,6 +168,10 @@ type DeployConfig struct {
 	QueueMax    int    `toml:"queue_max"`
 	PayloadFile *bool  `toml:"payload_file"` // pass the request body as DEPLOY_PAYLOAD_FILE
 
+	// Labels of this deploy, added to the global [labels].
+	Labels map[string]string `toml:"labels"`
+	labels map[string]string // global + own
+
 	// Email sent after the deploy (e.g. a welcome email with what it created).
 	Email *EmailConfig `toml:"email"`
 
@@ -288,13 +296,23 @@ func (c *Config) validate() error {
 	if err := c.PwPush.validate(); err != nil {
 		return err
 	}
+	if err := c.Hub.validate(); err != nil {
+		return err
+	}
 	c.GitHub.commitStatus = c.GitHub.CommitStatus == nil || *c.GitHub.CommitStatus
 	if len(c.Deploy) == 0 {
 		return fmt.Errorf("no [deploy.<name>] sections defined")
 	}
 
+	if err := validateLabels("labels", c.Labels); err != nil {
+		return err
+	}
 	paths := map[string]string{}
 	for name, d := range c.Deploy {
+		if err := validateLabels("deploy."+name+".labels", d.Labels); err != nil {
+			return err
+		}
+		d.labels = mergeLabels(c.Labels, d.Labels)
 		d.Name = name
 		if err := d.validate(); err != nil {
 			return fmt.Errorf("deploy.%s: %w", name, err)
@@ -681,6 +699,11 @@ func (c *Config) ResolveSecrets() error {
 			return err
 		}
 	}
+	if c.Hub.URL != "" {
+		if c.Hub.token, err = get("hub.token_env", c.Hub.TokenEnv); err != nil {
+			return err
+		}
+	}
 	if c.PwPush.TokenEnv != "" {
 		if c.PwPush.token, err = get("pwpush.token_env", c.PwPush.TokenEnv); err != nil {
 			return err
@@ -703,7 +726,7 @@ func (c *Config) DeployNames() []string {
 // out of deploy commands.
 func (c *Config) secretEnvNames() []string {
 	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv, c.Cloudflare.APITokenEnv,
-		c.SMTP.UserEnv, c.SMTP.PasswordEnv, c.PwPush.TokenEnv}
+		c.SMTP.UserEnv, c.SMTP.PasswordEnv, c.PwPush.TokenEnv, c.Hub.TokenEnv}
 	for _, d := range c.Deploy {
 		names = append(names, d.SecretEnv, d.APIKeyEnv, d.APISecretEnv)
 	}

@@ -91,6 +91,23 @@ See [Notifications](../guides/notifications.md).
 | `api_token_env` | – | env var with an API token allowed to purge the cache |
 | `api_url` | `https://api.cloudflare.com/client/v4` | |
 
+## `[labels]`
+
+`key = "value"` pairs for every deploy on this server, e.g. `client`,
+`environment`. See [Labels](../guides/labels.md).
+
+## `[hub]`
+
+Send events to a [central hub](../guides/hub.md).
+
+| Key | Default | |
+|---|---|---|
+| `url` | – | the hub's base URL (`https://hub.example.com`); without it, nothing is sent |
+| `agent` | short hostname | this server's name on the hub (`nimdeploy hub agent add <name>`) |
+| `token_env` | required with `url` | env var with this agent's token |
+| `send_log_tail` | `20` | last log lines sent with a failed deploy (0-500) |
+| `heartbeat` | `1m` | inventory interval (at least `10s`) |
+
 ## `[deploy.<name>]`
 
 One table per deploy. The name is used in the CLI, the log directory and
@@ -125,6 +142,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `cloudflare_zone_id`, `cloudflare_purge` | – | purge `["everything"]` or URLs after a successful deploy (needs `[cloudflare]`) |
 | `events` | – | stripe, paddle, lemonsqueezy: event types that run ([details](../guides/payments.md)) |
 | `email` | – | table: `on`, `to`, `to_from`, `bcc`, `subject`, `template`, `secrets`, `once` ([details](../guides/email.md)) |
+| `labels` | – | table merged over `[labels]` for this deploy ([details](../guides/labels.md)) |
 | `payload_file` | `true` for generic, woocommerce and payments | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |
 
 WooCommerce adds `store_url`, `webhook_url`, `api_key_env`, `api_secret_env`,

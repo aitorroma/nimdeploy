@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hub.fullname" . }}
+  labels: {{- include "hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "hub.selector" . | nindent 6 }}
+      app.kubernetes.io/component: hub
+  template:
+    metadata:
+      labels: {{- include "hub.selector" . | nindent 8 }}
+        app.kubernetes.io/component: hub
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: hub
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["hub", "serve"]
+          env:
+            - name: NIMDEPLOY_HUB_LISTEN
+              value: "0.0.0.0:9100"
+            - name: NIMDEPLOY_HUB_DATABASE_URL
+              value: {{ include "hub.databaseURL" . | quote }}
+            - name: NIMDEPLOY_HUB_RETAIN_DAYS
+              value: {{ .Values.hub.retainDays | quote }}
+            {{- with .Values.hub.trustedHeader }}
+            - name: NIMDEPLOY_HUB_TRUSTED_HEADER
+              value: {{ . | quote }}
+            {{- end }}
+            - name: NIMDEPLOY_HUB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ include "hub.secretName" . }}, key: token}
+            {{- if and (not .Values.sqld.enabled) (or .Values.externalDatabase.token .Values.externalDatabase.existingSecret) }}
+            - name: LIBSQL_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.externalDatabase.existingSecret | default (printf "%s-db" (include "hub.fullname" .)) }}, key: token}
+            {{- end }}
+            {{- with .Values.hub.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 9100}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            # Not /healthz: a database hiccup shouldn't restart the hub.
+            tcpSocket: {port: http}
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          resources: {{- toYaml .Values.hub.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hub.fullname" . }}
+  labels: {{- include "hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "hub.selector" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+  ports:
+    - {name: http, port: {{ .Values.service.port }}, targetPort: http}

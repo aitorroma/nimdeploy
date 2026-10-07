@@ -1,0 +1,42 @@
+# nimdeploy hub + libSQL server (sqld), for one Docker host.
+#
+#   cp .env.example .env        # set NIMDEPLOY_HUB_TOKEN (openssl rand -hex 32)
+#   docker compose up -d
+#   docker compose exec hub nimdeploy hub agent add stage-1
+#
+# The hub listens on 127.0.0.1:9100: publish it with your reverse proxy
+# (nginx, Caddy, Traefik, Cloudflare Tunnel) over HTTPS. sqld is only on the
+# internal network; its data is in the "sqld-data" volume (a SQLite file).
+name: nimdeploy-hub
+
+services:
+  sqld:
+    image: ghcr.io/tursodatabase/libsql-server:v0.24.33
+    restart: unless-stopped
+    environment:
+      SQLD_NODE: primary
+      SQLD_HTTP_LISTEN_ADDR: 0.0.0.0:8080
+    volumes:
+      - sqld-data:/var/lib/sqld
+    networks: [internal]
+
+  hub:
+    image: ghcr.io/aitorroma/nimdeploy:${NIMDEPLOY_VERSION:-latest}
+    restart: unless-stopped
+    depends_on: [sqld]
+    command: ["hub", "serve"]
+    environment:
+      NIMDEPLOY_HUB_DATABASE_URL: http://sqld:8080
+      NIMDEPLOY_HUB_TOKEN: ${NIMDEPLOY_HUB_TOKEN:?set NIMDEPLOY_HUB_TOKEN in .env}
+      NIMDEPLOY_HUB_TRUSTED_HEADER: ${NIMDEPLOY_HUB_TRUSTED_HEADER:-}
+      NIMDEPLOY_HUB_RETAIN_DAYS: ${NIMDEPLOY_HUB_RETAIN_DAYS:-90}
+    ports:
+      - "${NIMDEPLOY_HUB_PUBLISH:-127.0.0.1:9100}:9100"
+    networks: [internal, default]
+
+volumes:
+  sqld-data:
+
+networks:
+  internal:
+    internal: true

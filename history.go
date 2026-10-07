@@ -30,6 +30,10 @@ func (r *Runner) History(name string, limit int) ([]State, error) {
 	}
 
 	r.mu.Lock()
+	var labels map[string]string
+	if d, ok := r.cfg.Deploy[name]; ok {
+		labels = d.labels
+	}
 	current := State{}
 	if st := r.states[name]; st != nil {
 		current = copyState(st)
@@ -45,6 +49,7 @@ func (r *Runner) History(name string, limit int) ([]State, error) {
 		path := filepath.Join(dir, n)
 		st := parseLog(path)
 		st.Log = n
+		st.Labels = copyLabels(labels) // labels live in the config, not in the logs
 		if st.Deploy == "" {
 			st.Deploy = name
 		}

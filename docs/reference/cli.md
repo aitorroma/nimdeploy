@@ -9,10 +9,11 @@ nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
 nimdeploy [flags] rollback [-to SHA] [-n] [-f] <deploy>
 nimdeploy [flags] mail test|send|retry
 nimdeploy [flags] pwpush [-views N] [-days N] [-note TEXT] < secret
-nimdeploy [flags] status [-json] [deploy]
-nimdeploy [flags] history [-n 20] [-json] [deploy]
+nimdeploy [flags] status [-json] [-wide] [-l key=value]... [deploy]
+nimdeploy [flags] history [-n 20] [-json] [-l key=value]... [deploy]
 nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
 nimdeploy [flags] woocommerce add|register|status|replay|note
+nimdeploy hub serve|agent add|list|revoke|healthcheck   (no config file; see the hub guide)
 ```
 
 | Flag | |
@@ -99,6 +100,13 @@ nimdeploy woocommerce note orders [-status completed] [-customer] 1234 "text"
 ```
 
 See [Deploy from a WooCommerce sale](../guides/woocommerce.md).
+
+`-wide` adds the [labels](../guides/labels.md); `-l key=value` shows only the
+deploys with that label (repeat it to require several).
+
+## hub
+
+The central console: see [Central hub](../guides/hub.md#command-line).
 
 ## history
 

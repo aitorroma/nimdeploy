@@ -1,0 +1,14 @@
+nimdeploy hub {{ .Chart.AppVersion }} installed.
+
+Dashboard token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "hub.secretName" . }} -o jsonpath='{.data.token}' | base64 -d; echo
+
+Create an agent (one per server) and copy its token into that server's secrets.env:
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "hub.fullname" . }} -- nimdeploy hub agent add <name>
+
+{{- if .Values.ingress.enabled }}
+Agents send to: https://{{ .Values.ingress.host }}
+{{- else }}
+No Ingress: try it with
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "hub.fullname" . }} 9100:{{ .Values.service.port }}
+{{- end }}

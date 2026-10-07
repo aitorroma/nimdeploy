@@ -38,6 +38,20 @@ retain = 30                   # log files kept per deploy (0 = keep all)
 #token_env = "GITHUB_TOKEN"
 #commit_status = false        # e.g. a read-only token used only for wait_for_ci
 
+# Labels for every deploy on this server (optional): shown in notifications,
+# /status, /metrics, as DEPLOY_LABEL_* and on the hub. Override per deploy
+# with [deploy.<name>.labels].
+#[labels]
+#client = "Acme"
+#environment = "production"
+
+# Send events to a central hub (optional): "nimdeploy hub agent add <name>"
+# on the hub prints the token for secrets.env.
+#[hub]
+#url = "https://hub.example.com"
+#agent = "acme-prod-1"         # default: short hostname
+#token_env = "NIMDEPLOY_HUB_TOKEN"
+
 [deploy.frontend]
 # provider = "github"         # github (default), gitea, forgejo, gitlab, bitbucket
 path = "/hooks/frontend"
