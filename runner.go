@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -75,6 +76,10 @@ type Trigger struct {
 	// lane is what the lock and queue apply to: the deploy, or the deploy plus
 	// the value of its queue_key param.
 	lane string
+	// queuedAt is when it was submitted, for the queue wait metric.
+	queuedAt time.Time
+	// parent is the request's span, for tracing.
+	parent *span
 }
 
 // State is the last known state of a deploy, exposed on /status and
@@ -97,9 +102,11 @@ type State struct {
 	Params     []Param           `json:"params,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
 	ExitCode   *int              `json:"exit_code,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	Log        string            `json:"log,omitempty"`
-	Queued     *QueuedInfo       `json:"queued,omitempty"`
+	// Ansible is the PLAY RECAP of an [ansible] deploy.
+	Ansible *AnsibleSummary `json:"ansible,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Log     string          `json:"log,omitempty"`
+	Queued  *QueuedInfo     `json:"queued,omitempty"`
 	// NextRun is the next scheduled run (deploys with a schedule).
 	NextRun *time.Time `json:"next_run,omitempty"`
 }
@@ -151,6 +158,7 @@ type Runner struct {
 	schedDone    chan struct{}
 	metrics      *metrics
 	hub          *hubAgent                     // nil without [hub]
+	tracer       *tracer                       // nil without [otel]
 	inflight     map[string]map[string]Trigger // queue_mode "all": running triggers per deploy, by log file
 	seen         *deliveryCache
 }
@@ -190,6 +198,13 @@ func NewRunner(cfg *Config, notifier *Notifier) (*Runner, error) {
 
 // SetConfig applies a (re)loaded config. Running deploys keep the settings
 // they started with.
+// config is the current config.
+func (r *Runner) config() *Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cfg
+}
+
 func (r *Runner) SetConfig(cfg *Config, notifier *Notifier) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -272,10 +287,13 @@ func (r *Runner) Submit(name string, t Trigger) (SubmitResult, error) {
 	if !ok {
 		return SubmitResult{}, ErrUnknownDeploy
 	}
-	if r.seen.has(t.Delivery) {
+	if r.seen.has(name, t.Delivery) {
 		return SubmitResult{}, ErrDuplicate
 	}
 	t.lane = laneOf(d, t.Params)
+	if t.queuedAt.IsZero() {
+		t.queuedAt = time.Now()
+	}
 
 	if d.lock && r.running[t.lane] > 0 {
 		if !d.queue {
@@ -301,7 +319,7 @@ func (r *Runner) Submit(name string, t Trigger) (SubmitResult, error) {
 			Since: now.Truncate(time.Second), Count: r.pendingCountLocked(name)}
 		r.persist(st)
 		r.persistQueue(d)
-		r.seen.add(t.Delivery)
+		r.seen.add(name, t.Delivery)
 		res.State = copyState(st)
 		return res, nil
 	}
@@ -310,13 +328,16 @@ func (r *Runner) Submit(name string, t Trigger) (SubmitResult, error) {
 	if err != nil {
 		return SubmitResult{}, err
 	}
-	r.seen.add(t.Delivery)
+	r.seen.add(name, t.Delivery)
 	return SubmitResult{Result: ResultStarted, State: copyState(st)}, nil
 }
 
 // startLocked creates the log and launches the command. Callers hold r.mu.
 func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	start := time.Now()
+	if !t.queuedAt.IsZero() {
+		r.metrics.queueWait(d.Name, start.Sub(t.queuedAt))
+	}
 	f, path, err := createDeployLog(r.dir, d.Name, t.Delivery, start)
 	if err != nil {
 		return nil, fmt.Errorf("create log: %w", err)
@@ -375,15 +396,35 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	retain := r.cfg.Logging.Retain
 	cf := r.cfg.Cloudflare
 
-	log.Printf("deploy=%s status=started trigger=%s delivery=%s commit=%s log=%s", d.Name, t.Source, t.Delivery, t.Commit, st.Log)
+	sp := r.tracer.start("deploy "+d.Name, spanInternal, t.parent.context(), firstTime(t.queuedAt, start))
+	sp.set(spanAttr{"nimdeploy.deploy", d.Name}, spanAttr{"nimdeploy.run", runID(path)}, spanAttr{"nimdeploy.trigger", t.Source},
+		spanAttr{"nimdeploy.provider", t.Provider})
+	for _, a := range []spanAttr{{"vcs.repository.name", t.Repository}, {"vcs.ref.head.name", t.Branch}, {"vcs.ref.head.revision", t.Commit},
+		{"nimdeploy.delivery", t.Delivery}, {"nimdeploy.pusher", t.Pusher}, {"nimdeploy.event", t.Event}, {"nimdeploy.resource_id", t.ResourceID}} {
+		if a.Value != "" {
+			sp.set(a)
+		}
+	}
+	for _, k := range sortedKeys(d.labels) {
+		sp.set(spanAttr{"nimdeploy.label." + k, d.labels[k]})
+	}
+	if !t.queuedAt.IsZero() && start.Sub(t.queuedAt) > 10*time.Millisecond {
+		sp.childAt("queue.wait", t.queuedAt).endAt(start)
+	}
+	trace := ""
+	if id := sp.TraceID(); id != "" {
+		trace = " trace_id=" + id
+		env = append(env, "TRACEPARENT="+sp.traceparent())
+	}
+	log.Printf("deploy=%s status=started trigger=%s delivery=%s commit=%s run=%s%s log=%s", d.Name, t.Source, t.Delivery, t.Commit, runID(path), trace, st.Log)
 	started := copyState(st)
 	r.hub.emit(hubEvent{Type: hubEventDeployStart, Deploy: d.Name, State: &started})
 	r.wg.Add(1)
-	go r.run(d, t, env, f, path, st, start, notifier, retain, cf)
+	go r.run(d, t, env, f, path, st, start, notifier, retain, cf, sp)
 	return st, nil
 }
 
-func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path string, st *State, start time.Time, notifier *Notifier, retain int, cf CloudflareConfig) {
+func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path string, st *State, start time.Time, notifier *Notifier, retain int, cf CloudflareConfig, sp *span) {
 	defer r.wg.Done()
 
 	logf := func(format string, args ...any) {
@@ -407,7 +448,11 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	for _, p := range t.Params {
 		logf("param.%s=%s", p.Name, p.Value)
 	}
-	logf("command=%s", strings.Join(append([]string{d.Command}, d.Args...), " "))
+	if a := d.Ansible; a != nil {
+		logf("ansible=%s %s", a.Mode, firstNonEmpty(a.Playbook, a.URL))
+	} else {
+		logf("command=%s", strings.Join(append([]string{d.Command}, d.Args...), " "))
+	}
 	if d.WorkingDirectory != "" {
 		logf("working_directory=%s", d.WorkingDirectory)
 	}
@@ -419,12 +464,20 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 
 	status, errMsg := StatusSuccess, ""
 	var exitCode *int
+	var ansibleSum *AnsibleSummary
 	superseded := false
 	cmdStart := start
 	proceed := true
 	if needsCI(d, t) {
 		logf("ci: waiting for %s (timeout %s)", strings.Join(d.WaitForCI, ", "), d.CITimeout)
+		ciStart := time.Now()
+		ciSpan := sp.child("ci.wait", spanInternal)
 		ok, reason, sup := r.waitForCI(d, t, notifier, logf)
+		r.metrics.phase(d.Name, "ci", time.Since(ciStart))
+		if !ok {
+			ciSpan.fail(reason)
+		}
+		ciSpan.End()
 		if ok {
 			logf("ci: passed after %s, deploying", formatDuration(time.Since(start)))
 			fmt.Fprintln(f)
@@ -437,10 +490,18 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 	if proceed {
 		notifier.CommitStatus(d, t, "pending", "Deploying")
-		status, exitCode, errMsg = r.withHooks(d, env, f, logf, cf)
+		status, exitCode, errMsg, ansibleSum = r.withHooks(d, t, env, f, path, logf, cf, sp)
 	}
 
-	if line := r.sendDeployEmail(d, t, status, runFile(path, "output"), notifier); line != "" {
+	emailSpan := sp.child("email", spanClient)
+	line := r.sendDeployEmail(d, t, status, runFile(path, "output"), notifier)
+	if line == "" {
+		emailSpan = nil // no email for this deploy: no span
+	} else {
+		emailSpan.set(spanAttr{"nimdeploy.email.result", line})
+		emailSpan.End()
+	}
+	if line != "" {
 		fmt.Fprintln(f)
 		logf("%s", line)
 	}
@@ -461,10 +522,14 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 		log.Printf("deploy=%s cannot close log: %v", d.Name, cerr)
 	}
 
+	trace := ""
+	if id := sp.TraceID(); id != "" {
+		trace = " trace_id=" + id
+	}
 	if errMsg != "" {
-		log.Printf("deploy=%s status=%s duration=%s error=%q log=%s", d.Name, status, duration, errMsg, path)
+		log.Printf("deploy=%s status=%s duration=%s run=%s%s error=%q log=%s", d.Name, status, duration, runID(path), trace, errMsg, path)
 	} else {
-		log.Printf("deploy=%s status=%s duration=%s log=%s", d.Name, status, duration, path)
+		log.Printf("deploy=%s status=%s duration=%s run=%s%s log=%s", d.Name, status, duration, runID(path), trace, path)
 	}
 
 	_ = os.Remove(filepath.Join(filepath.Dir(path), "."+strings.TrimSuffix(st.Log, ".log")+".payload.json"))
@@ -484,6 +549,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	st.Duration = duration
 	st.ExitCode = exitCode
 	st.Error = errMsg
+	st.Ansible = ansibleSum
 	recovered := false
 	if status != StatusSkipped {
 		// A skipped deploy changed nothing, so it neither breaks nor fixes.
@@ -504,6 +570,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	r.mu.Unlock()
 
 	r.metrics.finished(d.Name, status, finished.Sub(cmdStart))
+	r.metrics.ansible(d.Name, ansibleSum)
 	if r.hub != nil {
 		ev := hubEvent{Type: hubEventDeployDone, Deploy: d.Name, State: &final}
 		if n := r.hub.config().logTail; n > 0 && status != StatusSuccess {
@@ -512,6 +579,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 		r.hub.emit(ev)
 	}
 	notifier.Finished(d, t, final, recovered, path, superseded)
+	endDeploySpan(sp, final, finished)
 
 	if status == StatusFailed && d.RollbackOnFailure && t.Source != TriggerRollback && errMsg != errShutdownCanceled {
 		r.autoRollback(d, t)
@@ -519,11 +587,25 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 }
 
 // withHooks runs before, the command, the health check and the after hooks.
-func (r *Runner) withHooks(d *DeployConfig, env []string, f *os.File, logf func(string, ...any), cf CloudflareConfig) (status string, exitCode *int, errMsg string) {
+func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File, logPath string, logf func(string, ...any), cf CloudflareConfig, sp *span) (status string, exitCode *int, errMsg string, sum *AnsibleSummary) {
+	phase := func(name string, start time.Time) { r.metrics.phase(d.Name, name, time.Since(start)) }
+	// withTrace gives a command the TRACEPARENT of its own span.
+	withTrace := func(s *span) []string {
+		if tp := s.traceparent(); tp != "" {
+			return append(slices.Clip(env), "TRACEPARENT="+tp)
+		}
+		return env
+	}
 	hook := func(name, script string) (string, string) {
 		fmt.Fprintln(f)
 		logf("hook=%s", name)
-		st, _, msg := r.runCmd(d, env, f, "/bin/bash", []string{"-eo", "pipefail", "-c", script})
+		defer phase(name, time.Now())
+		hs := sp.child("hook "+name, spanInternal)
+		defer hs.End()
+		st, _, msg := r.runCmd(d, withTrace(hs), f, "/bin/bash", []string{"-eo", "pipefail", "-c", script})
+		if st != StatusSuccess {
+			hs.fail(msg)
+		}
 		if st != StatusSuccess {
 			logf("hook=%s failed: %s", name, msg)
 		}
@@ -536,19 +618,43 @@ func (r *Runner) withHooks(d *DeployConfig, env []string, f *os.File, logf func(
 				hook("after_failure", d.AfterFailure)
 			}
 			if msg == errShutdownCanceled {
-				return StatusFailed, nil, msg
+				return StatusFailed, nil, msg, nil
 			}
-			return StatusFailed, nil, "before hook: " + msg
+			return StatusFailed, nil, "before hook: " + msg, nil
 		}
 	}
-	status, exitCode, errMsg = r.execute(d, env, f)
+	cmdStart := time.Now()
+	if d.Ansible != nil {
+		cs := sp.child(d.Ansible.Binary, spanInternal)
+		status, exitCode, errMsg, sum = r.executeAnsible(d, t, withTrace(cs), f, logPath, logf)
+		if sum != nil {
+			cs.set(spanAttr{"ansible.hosts", int64(sum.Hosts)}, spanAttr{"ansible.hosts.failed", int64(sum.HostsFailed)},
+				spanAttr{"ansible.hosts.unreachable", int64(sum.HostsUnreachable)}, spanAttr{"ansible.hosts.changed", int64(sum.HostsChanged)})
+		}
+		endCommandSpan(cs, status, exitCode, errMsg)
+	} else {
+		cs := sp.child("command", spanInternal)
+		cs.set(spanAttr{"process.executable.path", d.Command})
+		status, exitCode, errMsg = r.execute(d, withTrace(cs), f)
+		endCommandSpan(cs, status, exitCode, errMsg)
+	}
+	phase("command", cmdStart)
 	if status == StatusSuccess && d.HealthURL != "" {
+		healthStart := time.Now()
+		hs := sp.child("health_check", spanClient)
+		hs.set(spanAttr{"url.full", d.HealthURL})
 		if err := r.healthCheck(d, logf); err != nil {
 			status, errMsg = StatusFailed, "health check: "+err.Error()
+			hs.fail(err.Error())
 		}
+		hs.End()
+		phase("health", healthStart)
 	}
 	if status == StatusSuccess {
 		if d.CloudflareZoneID != "" {
+			defer phase("cloudflare", time.Now())
+			cfs := sp.child("cloudflare.purge", spanClient)
+			defer cfs.End()
 			if err := purgeCloudflare(r.ctx, cf, d.CloudflareZoneID, d.CloudflarePurge); err != nil {
 				logf("cloudflare: purge failed: %v", err) // the deploy itself worked
 			} else {
@@ -561,7 +667,7 @@ func (r *Runner) withHooks(d *DeployConfig, env []string, f *os.File, logf func(
 	} else if d.AfterFailure != "" && errMsg != errShutdownCanceled {
 		hook("after_failure", d.AfterFailure)
 	}
-	return status, exitCode, errMsg
+	return status, exitCode, errMsg, sum
 }
 
 // healthCheck waits for HealthURL to answer 2xx/3xx, up to HealthTimeout.
@@ -646,13 +752,24 @@ func (r *Runner) execute(d *DeployConfig, env []string, f *os.File) (status stri
 // runCmd runs a command (the deploy's or a hook) with the deploy's timeout,
 // directory and environment, in its own process group.
 func (r *Runner) runCmd(d *DeployConfig, env []string, f *os.File, command string, args []string) (status string, exitCode *int, errMsg string) {
+	return r.runCmdTee(d, env, f, command, args, nil)
+}
+
+// runCmdTee is runCmd that also copies the output to tee (e.g. to parse it).
+func (r *Runner) runCmdTee(d *DeployConfig, env []string, f *os.File, command string, args []string, tee io.Writer) (status string, exitCode *int, errMsg string) {
 	ctx, cancel := context.WithTimeout(r.ctx, d.Timeout.Duration)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = d.WorkingDirectory
 	cmd.Env = env
-	if d.logOutput {
+	switch {
+	case tee != nil && d.logOutput:
+		w := io.MultiWriter(f, tee)
+		cmd.Stdout, cmd.Stderr = w, w
+	case tee != nil:
+		cmd.Stdout = tee
+	case d.logOutput:
 		// The child writes straight to the file: nothing is buffered in memory.
 		cmd.Stdout = f
 		cmd.Stderr = f
@@ -731,6 +848,9 @@ func (r *Runner) startPendingLocked(lane string) {
 	if !ok {
 		log.Printf("deploy=%s queued run %s dropped: deploy removed from config", name, what)
 		return
+	}
+	if p.trigger.queuedAt.IsZero() {
+		p.trigger.queuedAt = p.since
 	}
 	if _, err := r.startLocked(d, p.trigger); err != nil {
 		log.Printf("deploy=%s cannot start queued run %s: %v", name, what, err)
@@ -836,7 +956,7 @@ func (r *Runner) loadQueue(d *DeployConfig) {
 		t.lane = laneOf(d, t.Params)
 		// Keep the order: a nanosecond apart.
 		r.pending[t.lane] = append(r.pending[t.lane], &pendingRun{trigger: t, since: now.Add(time.Duration(i))})
-		r.seen.add(t.Delivery)
+		r.seen.add(d.Name, t.Delivery)
 	}
 	if n := r.pendingCountLocked(d.Name); n > 0 {
 		log.Printf("deploy=%s resuming %d queued runs", d.Name, n)
@@ -929,6 +1049,9 @@ func (r *Runner) Shutdown(grace time.Duration) {
 const errShutdownCanceled = "canceled: service shutting down"
 
 // runFile is a private per-run file next to the log: .<log name>.<kind>
+// runID names one run: its log file without ".log".
+func runID(logPath string) string { return strings.TrimSuffix(filepath.Base(logPath), ".log") }
+
 func runFile(logPath, kind string) string {
 	return filepath.Join(filepath.Dir(logPath), "."+strings.TrimSuffix(filepath.Base(logPath), ".log")+"."+kind)
 }
@@ -977,7 +1100,8 @@ func copyState(st *State) State {
 	return c
 }
 
-// deliveryCache remembers the last N delivery IDs.
+// deliveryCache remembers the last N delivery IDs, per deploy: one webhook
+// can start several deploys that share its path.
 type deliveryCache struct {
 	ids  map[string]bool
 	ring []string
@@ -988,10 +1112,14 @@ func newDeliveryCache(size int) *deliveryCache {
 	return &deliveryCache{ids: map[string]bool{}, ring: make([]string, size)}
 }
 
-func (c *deliveryCache) has(id string) bool { return id != "" && c.ids[id] }
+func (c *deliveryCache) has(deploy, id string) bool { return id != "" && c.ids[deploy+"\x00"+id] }
 
-func (c *deliveryCache) add(id string) {
-	if id == "" || c.ids[id] {
+func (c *deliveryCache) add(deploy, id string) {
+	if id == "" {
+		return
+	}
+	id = deploy + "\x00" + id
+	if c.ids[id] {
 		return
 	}
 	delete(c.ids, c.ring[c.next])
@@ -1079,4 +1207,42 @@ func formatDuration(d time.Duration) string {
 		return d.Round(time.Millisecond).String()
 	}
 	return d.Round(time.Second).String()
+}
+
+func firstTime(ts ...time.Time) time.Time {
+	for _, t := range ts {
+		if !t.IsZero() {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func endCommandSpan(s *span, status string, exitCode *int, errMsg string) {
+	if exitCode != nil {
+		s.set(spanAttr{"process.exit.code", int64(*exitCode)})
+	}
+	if status != StatusSuccess {
+		s.fail(errMsg)
+	}
+	s.End()
+}
+
+// endDeploySpan records the result on the deploy's span and ends it.
+func endDeploySpan(s *span, st State, at time.Time) {
+	s.set(spanAttr{"nimdeploy.status", st.Status}, spanAttr{"nimdeploy.duration", st.Duration})
+	if st.ExitCode != nil {
+		s.set(spanAttr{"process.exit.code", int64(*st.ExitCode)})
+	}
+	if a := st.Ansible; a != nil {
+		s.set(spanAttr{"ansible.hosts", int64(a.Hosts)}, spanAttr{"ansible.hosts.failed", int64(a.HostsFailed)},
+			spanAttr{"ansible.hosts.unreachable", int64(a.HostsUnreachable)})
+	}
+	switch st.Status {
+	case StatusSuccess, StatusSkipped:
+		s.ok()
+	default:
+		s.fail(st.Error)
+	}
+	s.endAt(at)
 }

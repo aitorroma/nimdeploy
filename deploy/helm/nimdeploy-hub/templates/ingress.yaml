@@ -40,6 +40,10 @@ spec:
     - port: http
       path: /metrics
       interval: {{ .Values.serviceMonitor.interval }}
+      {{- if .Values.hub.tls.existingSecret }}
+      scheme: https
+      tlsConfig: {insecureSkipVerify: true}
+      {{- end }}
       authorization:
         credentials: {name: {{ include "hub.secretName" . }}, key: token}
 {{- end }}

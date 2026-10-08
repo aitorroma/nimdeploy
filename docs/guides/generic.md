@@ -181,6 +181,70 @@ action = "deploy"
 Quote keys that contain dots (`"meta.environment"`): in TOML an unquoted
 dotted key would create nested tables.
 
+### Operators
+
+Instead of a value, a table of operators; all of them must hold:
+
+```toml
+[deploy.releases.when]
+ref = { match = "^refs/tags/v[0-9]+", not_match = "-rc" }   # regular expressions
+"sender.login" = { not = ["dependabot[bot]", "renovate[bot]"] }
+"pull_request.additions" = { lte = 500 }                    # numbers: gt, gte, lt, lte
+"meta.dry_run" = { exists = false }                         # present or not
+title = { prefix = "[deploy]", contains = "api" }           # also suffix
+environment = { in = ["stage", "production"] }              # same as a list
+```
+
+### `when_any`: one of them is enough
+
+`when` needs every condition; `when_any` needs one (same syntax). With both,
+the request must pass `when` **and** one of `when_any`:
+
+```toml
+[deploy.releases.when]
+action = "published"
+[deploy.releases.when_any]
+"release.tag_name" = { match = "^v[0-9]+\\.[0-9]+\\.0$" }   # a minor or major release
+"release.body" = { contains = "[deploy]" }                  # or one that asks for it
+```
+
+These work with every provider (git, WooCommerce, payments), not only generic.
+
+## Several deploys on one path
+
+Several deploys can share a `path`: each request goes to all of them, and each
+one decides on its own with its `when`/`when_any`, its params and its queue.
+That is how one webhook triggers different actions ("event → rules →
+actions"):
+
+```toml
+[deploy.app]                     # pushes to main: deploy the app
+path = "/hooks/gitea"
+provider = "generic"
+secret_env = "GITEA_SECRET"
+command = "/opt/deploy/app.sh"
+[deploy.app.when]
+ref = "refs/heads/main"
+
+[deploy.docs]                    # changes under docs/: rebuild the site
+path = "/hooks/gitea"
+provider = "generic"
+secret_env = "GITEA_SECRET"
+command = "/opt/deploy/docs.sh"
+[deploy.docs.when]
+ref = "refs/heads/main"
+[deploy.docs.when_any]
+"head_commit.modified[0]" = { prefix = "docs/" }
+```
+
+- They run in name order, independently: one being ignored or failing doesn't
+  stop the others, and each has its own lock and queue.
+- They must authenticate the request the same way: same `provider`,
+  `secret_env` and signature/token headers (checked when the config loads).
+- The answer lists each one: `{"results": [{"deploy": "app", "code": 202, ...}, {"deploy": "docs", "code": 200, ...}]}`.
+  The status is `202` if any started or queued, `200` if all ignored it, else
+  the first refusal (`401`, `400`...).
+
 ## Queues per value: `queue_key`
 
 Without it, a deploy runs one at a time and a request arriving meanwhile is
@@ -193,6 +257,9 @@ parallel, two `api` requests are serialized, and a third `api` replaces the
 queued one.
 
 ## From Ansible
+
+The [Ansible collection](ansible.md#the-ansible-collection) wraps this:
+`aitorroma.nimdeploy.nimdeploy_send` signs and posts the request. Without it:
 
 === "nimdeploy send (HMAC)"
 

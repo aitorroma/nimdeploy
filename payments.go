@@ -167,6 +167,7 @@ func (s *Server) handlePayment(d *DeployConfig) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid signature")
 			return
 		}
+		authenticated(r)
 		doc, err := decodeJSON(body)
 		if err != nil {
 			s.paymentReject(w, d, Trigger{}, "invalid JSON payload")
@@ -201,7 +202,7 @@ func (s *Server) handlePayment(d *DeployConfig) http.HandlerFunc {
 		if d.payloadFile {
 			t.Payload = body
 		}
-		s.submit(w, d, t)
+		s.submit(w, r, d, t)
 	}
 }
 

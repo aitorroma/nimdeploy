@@ -39,6 +39,7 @@ type Config struct {
 	SMTP       SMTPConfig               `toml:"smtp"`
 	Hub        HubConfig                `toml:"hub"`
 	PwPush     PwPushConfig             `toml:"pwpush"`
+	OTel       OTelConfig               `toml:"otel"`
 	Deploy     map[string]*DeployConfig `toml:"deploy"`
 
 	// Labels apply to every deploy (client, environment...); see labels.go.
@@ -68,6 +69,22 @@ type ServerConfig struct {
 	// SocketMode is the permission of the unix socket.
 	SocketMode string `toml:"socket_mode"`
 
+	// Native TLS (see tls.go): HTTPS without a reverse proxy. The files are
+	// re-read when they change.
+	TLSCertFile string `toml:"tls_cert_file"`
+	TLSKeyFile  string `toml:"tls_key_file"`
+	// TLSClientCAFile enables client certificates (mTLS): "optional" verifies
+	// one when sent (deploys with client_names then require it), "require"
+	// refuses connections without one.
+	TLSClientCAFile string `toml:"tls_client_ca_file"`
+	TLSClientAuth   string `toml:"tls_client_auth"`
+	TLSMinVersion   string `toml:"tls_min_version"` // 1.2 (default) or 1.3
+	// APIClientNames limits /status, /history, /deploy, /rollback and
+	// /metrics to these client certificate names (CN or SAN), on top of the token.
+	APIClientNames []string `toml:"api_client_names"`
+	// Pprof serves Go's profiler on /debug/pprof/ (needs api_token_env).
+	Pprof bool `toml:"pprof"`
+
 	apiToken   string
 	socketPath string
 	socketMode os.FileMode
@@ -78,6 +95,9 @@ type LoggingConfig struct {
 	Directory string `toml:"directory"`
 	// Retain is the number of log files kept per deploy; 0 keeps everything.
 	Retain int `toml:"retain"`
+	// Format of the service log (journald, docker logs): text or json.
+	// Deploy logs stay plain text.
+	Format string `toml:"format"`
 }
 
 type NotifyConfig struct {
@@ -127,10 +147,12 @@ type DeployConfig struct {
 	Branch     string `toml:"branch"`
 	SecretEnv  string `toml:"secret_env"`
 
-	WorkingDirectory string   `toml:"working_directory"`
-	Command          string   `toml:"command"`
-	Args             []string `toml:"args"`
-	Env              []string `toml:"env"`
+	WorkingDirectory string `toml:"working_directory"`
+	Command          string `toml:"command"`
+	// Ansible runs ansible-playbook or ansible-pull instead of command.
+	Ansible *AnsibleConfig `toml:"ansible"`
+	Args    []string       `toml:"args"`
+	Env     []string       `toml:"env"`
 
 	Timeout Duration `toml:"timeout"`
 	// WaitForCI lists GitHub Actions workflow names that must succeed for the
@@ -160,6 +182,7 @@ type DeployConfig struct {
 
 	// Any provider: run only when the JSON matches, and pass declared values on.
 	When     map[string]any          `toml:"when"`
+	WhenAny  map[string]any          `toml:"when_any"` // like when, but one of them is enough
 	Params   map[string]*ParamConfig `toml:"params"`
 	QueueKey string                  `toml:"queue_key"` // param that gives each value its own lock and queue
 	// QueueMode "latest" (default for git) keeps only the newest waiting run;
@@ -167,6 +190,10 @@ type DeployConfig struct {
 	QueueMode   string `toml:"queue_mode"`
 	QueueMax    int    `toml:"queue_max"`
 	PayloadFile *bool  `toml:"payload_file"` // pass the request body as DEPLOY_PAYLOAD_FILE
+
+	// ClientNames, with server.tls_client_ca_file, accepts this webhook only
+	// from a verified client certificate with one of these names (CN or SAN).
+	ClientNames []string `toml:"client_names"`
 
 	// Labels of this deploy, added to the global [labels].
 	Labels map[string]string `toml:"labels"`
@@ -198,6 +225,7 @@ type DeployConfig struct {
 
 	schedule    *cronSpec
 	when        []whenCond
+	whenAny     []whenCond
 	pusherPath  []pathStep
 	queueAll    bool
 	payloadFile bool
@@ -256,12 +284,18 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		keys := make([]string, len(undecoded))
-		for i, k := range undecoded {
-			keys[i] = k.String()
+	var unknown []string
+	for _, k := range md.Undecoded() {
+		// Operator tables inside when/when_any ({ match = "..." }) are free
+		// form here; parseWhen checks them.
+		if len(k) > 3 && k[0] == "deploy" && (k[2] == "when" || k[2] == "when_any") ||
+			len(k) > 4 && k[0] == "deploy" && k[2] == "ansible" && k[3] == "extra_vars" {
+			continue
 		}
-		return nil, fmt.Errorf("unknown keys: %s", strings.Join(keys, ", "))
+		unknown = append(unknown, k.String())
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("unknown keys: %s", strings.Join(unknown, ", "))
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -285,6 +319,11 @@ func (c *Config) validate() error {
 	if c.Logging.Retain < 0 {
 		return fmt.Errorf("logging.retain must be >= 0")
 	}
+	switch c.Logging.Format {
+	case "", "text", "json":
+	default:
+		return fmt.Errorf("logging.format must be text or json")
+	}
 	if err := c.Notify.validate(); err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}
@@ -299,6 +338,9 @@ func (c *Config) validate() error {
 	if err := c.Hub.validate(); err != nil {
 		return err
 	}
+	if err := c.OTel.validate(); err != nil {
+		return err
+	}
 	c.GitHub.commitStatus = c.GitHub.CommitStatus == nil || *c.GitHub.CommitStatus
 	if len(c.Deploy) == 0 {
 		return fmt.Errorf("no [deploy.<name>] sections defined")
@@ -308,7 +350,8 @@ func (c *Config) validate() error {
 		return err
 	}
 	paths := map[string]string{}
-	for name, d := range c.Deploy {
+	for _, name := range c.DeployNames() {
+		d := c.Deploy[name]
 		if err := validateLabels("deploy."+name+".labels", d.Labels); err != nil {
 			return err
 		}
@@ -325,6 +368,9 @@ func (c *Config) validate() error {
 				return fmt.Errorf("deploy.%s.email: %w", name, err)
 			}
 		}
+		if len(d.ClientNames) > 0 && c.Server.TLSClientCAFile == "" {
+			return fmt.Errorf("deploy.%s: client_names needs server.tls_client_ca_file", name)
+		}
 		if d.CloudflareZoneID != "" && c.Cloudflare.APITokenEnv == "" {
 			return fmt.Errorf("deploy.%s: cloudflare_purge needs [cloudflare] api_token_env (a token with Zone → Cache Purge)", name)
 		}
@@ -332,7 +378,12 @@ func (c *Config) validate() error {
 			continue
 		}
 		if other, dup := paths[d.Path]; dup {
-			return fmt.Errorf("deploy.%s: path %s already used by deploy.%s", name, d.Path, other)
+			// Several deploys can share a path: each one with its own when
+			// runs for the same webhook. They must authenticate it the same way.
+			if err := sharedPathCompatible(c.Deploy[other], d); err != nil {
+				return fmt.Errorf("deploy.%s: path %s is also deploy.%s's: %w", name, d.Path, other, err)
+			}
+			continue
 		}
 		paths[d.Path] = name
 	}
@@ -358,6 +409,13 @@ func (s *ServerConfig) validate() error {
 	s.BasePath = strings.TrimRight(s.BasePath, "/")
 	if s.BasePath != "" && !hookPathRe.MatchString(s.BasePath) {
 		return fmt.Errorf("base_path must start with / and contain only letters, digits, / _ . -")
+	}
+
+	if err := s.validateTLS(); err != nil {
+		return err
+	}
+	if s.Pprof && s.APITokenEnv == "" {
+		return fmt.Errorf("pprof needs api_token_env")
 	}
 
 	s.trusted = nil
@@ -450,8 +508,12 @@ func (d *DeployConfig) validate() error {
 	if err := d.validateHooks(); err != nil {
 		return err
 	}
-	if d.Command == "" {
-		return fmt.Errorf("command is required")
+	if d.Ansible != nil {
+		if err := d.Ansible.validate(d); err != nil {
+			return fmt.Errorf("ansible: %w", err)
+		}
+	} else if d.Command == "" {
+		return fmt.Errorf("command (or [deploy.%s.ansible]) is required", d.Name)
 	}
 	if d.WorkingDirectory != "" && !filepath.IsAbs(d.WorkingDirectory) {
 		return fmt.Errorf("working_directory must be an absolute path")
@@ -502,6 +564,9 @@ func (d *DeployConfig) validate() error {
 	var err error
 	if d.when, err = parseWhen(d.When); err != nil {
 		return err
+	}
+	if d.whenAny, err = parseWhen(d.WhenAny); err != nil {
+		return fmt.Errorf("when_any: %w", err)
 	}
 	if len(d.Statuses) > 0 {
 		c := whenCond{from: "status", path: []pathStep{{key: "status", index: -1}}, values: d.Statuses}
@@ -709,6 +774,15 @@ func (c *Config) ResolveSecrets() error {
 			return err
 		}
 	}
+	if c.OTel.HeadersEnv != "" {
+		raw, err := get("otel.headers_env", c.OTel.HeadersEnv)
+		if err != nil {
+			return err
+		}
+		if c.OTel.headers, err = parseOTelHeaders(raw); err != nil {
+			return fmt.Errorf("otel.headers_env: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -726,7 +800,7 @@ func (c *Config) DeployNames() []string {
 // out of deploy commands.
 func (c *Config) secretEnvNames() []string {
 	names := []string{c.Server.APITokenEnv, c.Notify.URLEnv, c.Notify.TelegramTokenEnv, c.GitHub.TokenEnv, c.Cloudflare.APITokenEnv,
-		c.SMTP.UserEnv, c.SMTP.PasswordEnv, c.PwPush.TokenEnv, c.Hub.TokenEnv}
+		c.SMTP.UserEnv, c.SMTP.PasswordEnv, c.PwPush.TokenEnv, c.Hub.TokenEnv, c.OTel.HeadersEnv}
 	for _, d := range c.Deploy {
 		names = append(names, d.SecretEnv, d.APIKeyEnv, d.APISecretEnv)
 	}
@@ -776,6 +850,27 @@ func (d *DeployConfig) validateHooks() error {
 		}
 		if u, err := url.Parse(p); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return fmt.Errorf("cloudflare_purge: %q is not \"everything\" or a full URL", p)
+		}
+	}
+	return nil
+}
+
+// sharedPathCompatible checks that two deploys on one path verify a webhook
+// the same way, so one request is accepted or refused by both.
+func sharedPathCompatible(a, b *DeployConfig) error {
+	same := []struct{ what, x, y string }{
+		{"provider", a.Provider, b.Provider},
+		{"secret_env", a.SecretEnv, b.SecretEnv},
+		{"auth", a.Auth, b.Auth},
+		{"signature_header", a.SignatureHeader, b.SignatureHeader},
+		{"token_header", a.TokenHeader, b.TokenHeader},
+		{"timestamp_header", a.TimestampHeader, b.TimestampHeader},
+		{"delivery_header", a.DeliveryHeader, b.DeliveryHeader},
+		{"store_url", a.StoreURL, b.StoreURL},
+	}
+	for _, s := range same {
+		if s.x != s.y {
+			return fmt.Errorf("deploys sharing a path need the same %s (%q and %q)", s.what, s.x, s.y)
 		}
 	}
 	return nil

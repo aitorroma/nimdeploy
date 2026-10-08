@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,12 @@ type hubOptions struct {
 	TrustedHeader string
 	RetainDays    int
 	NoAuth        bool
+	// Native TLS and agent certificates (mTLS).
+	TLSCert, TLSKey, TLSClientCA string
+	LogFormat                    string
+	// AgentCerts: "optional" (a certificate, when sent, must name the agent)
+	// or "require" (every agent must send one with its name).
+	AgentCerts string
 }
 
 func envOr(name, def string) string {
@@ -74,6 +81,11 @@ func hubFlags(fs *flag.FlagSet, serve bool) *hubOptions {
 		days, _ := strconv.Atoi(envOr("NIMDEPLOY_HUB_RETAIN_DAYS", strconv.Itoa(hubDefaultRetain)))
 		fs.IntVar(&o.RetainDays, "retain-days", days, "delete events older than this, 0 keeps them ($NIMDEPLOY_HUB_RETAIN_DAYS)")
 		fs.BoolVar(&o.NoAuth, "no-auth", false, "allow a dashboard without $"+hubTokenEnv+" or -trusted-header on a non-local address")
+		fs.StringVar(&o.LogFormat, "log-format", envOr("NIMDEPLOY_HUB_LOG_FORMAT", "text"), "service log as text or json ($NIMDEPLOY_HUB_LOG_FORMAT)")
+		fs.StringVar(&o.TLSCert, "tls-cert", os.Getenv("NIMDEPLOY_HUB_TLS_CERT"), "serve HTTPS with this certificate ($NIMDEPLOY_HUB_TLS_CERT); re-read when it changes")
+		fs.StringVar(&o.TLSKey, "tls-key", os.Getenv("NIMDEPLOY_HUB_TLS_KEY"), "its private key ($NIMDEPLOY_HUB_TLS_KEY)")
+		fs.StringVar(&o.TLSClientCA, "tls-client-ca", os.Getenv("NIMDEPLOY_HUB_TLS_CLIENT_CA"), "CA of the agents' client certificates ($NIMDEPLOY_HUB_TLS_CLIENT_CA)")
+		fs.StringVar(&o.AgentCerts, "agent-certs", envOr("NIMDEPLOY_HUB_AGENT_CERTS", "optional"), "with -tls-client-ca: require a certificate named like the agent (require), or check it only when sent (optional) ($NIMDEPLOY_HUB_AGENT_CERTS)")
 	}
 	return o
 }
@@ -145,7 +157,13 @@ func cliHub(args []string) int {
 			addr = net.JoinHostPort("127.0.0.1", port)
 		}
 		c := &http.Client{Timeout: 5 * time.Second}
-		resp, err := c.Get("http://" + addr + "/healthz")
+		scheme := "http"
+		if os.Getenv("NIMDEPLOY_HUB_TLS_CERT") != "" {
+			// A liveness probe on localhost: the certificate names another host.
+			scheme = "https"
+			c.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
+		}
+		resp, err := c.Get(scheme + "://" + addr + "/healthz")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "hub:", err)
 			return 1
@@ -251,6 +269,24 @@ func hubServe(o *hubOptions) int {
 		log.Printf("hub: the dashboard would be open to anyone who reaches %s: set $%s, -trusted-header, or -no-auth", o.Listen, hubTokenEnv)
 		return 1
 	}
+	if o.LogFormat != "text" && o.LogFormat != "json" {
+		log.Printf("hub: -log-format must be text or json")
+		return 1
+	}
+	installLogSink(o.LogFormat, "nimdeploy-hub")
+	setLogSecrets([]string{o.uiToken, os.Getenv(hubDBTokenEnvName)})
+	if (o.TLSCert == "") != (o.TLSKey == "") {
+		log.Printf("hub: -tls-cert and -tls-key go together")
+		return 1
+	}
+	if o.TLSClientCA != "" && o.TLSCert == "" {
+		log.Printf("hub: -tls-client-ca needs -tls-cert and -tls-key")
+		return 1
+	}
+	if o.AgentCerts != tlsClientAuthOptional && o.AgentCerts != tlsClientAuthRequire {
+		log.Printf("hub: -agent-certs must be optional or require")
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	store, err := o.open(ctx)
@@ -282,6 +318,21 @@ func hubServe(o *hubOptions) int {
 		log.Printf("hub: listen %s: %v", o.Listen, err)
 		return 1
 	}
+	scheme := "http"
+	if o.TLSCert != "" {
+		// Client certificates are checked per request (only the agents'
+		// endpoint needs them), so the dashboard works without one.
+		tc, err := serverTLS(o.TLSCert, o.TLSKey, o.TLSClientCA, tlsClientAuthOptional, "")
+		if err != nil {
+			log.Printf("hub: tls: %v", err)
+			return 1
+		}
+		ln = tls.NewListener(ln, tc)
+		scheme = "https"
+		if o.TLSClientCA != "" {
+			scheme += ", agent certificates " + o.AgentCerts
+		}
+	}
 	auth := "token"
 	switch {
 	case o.uiToken != "" && o.TrustedHeader != "":
@@ -291,7 +342,7 @@ func hubServe(o *hubOptions) int {
 	case o.uiToken == "":
 		auth = "none"
 	}
-	log.Printf("nimdeploy %s hub listening on %s (database %s, dashboard auth: %s, retain %d days)", version, o.Listen, redactURL(o.DatabaseURL), auth, o.RetainDays)
+	log.Printf("nimdeploy %s hub listening on %s (%s, database %s, dashboard auth: %s, retain %d days)", version, o.Listen, scheme, redactURL(o.DatabaseURL), auth, o.RetainDays)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -391,6 +442,15 @@ func (h *hubServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !agentNameRe.MatchString(agent) {
 		writeError(w, http.StatusUnauthorized, "missing or bad "+hubAgentHeader)
 		return
+	}
+	if h.opts.TLSClientCA != "" {
+		// A verified certificate must name this agent; with "require" one must be sent.
+		names := clientNames(r)
+		if (len(names) > 0 || h.opts.AgentCerts == tlsClientAuthRequire) && !clientAllowed(r, []string{agent}) {
+			log.Printf("hub: refused events from %s (%s): client certificate %v is not for this agent", agent, clientAddr(r), names)
+			writeError(w, http.StatusUnauthorized, "client certificate required for agent "+agent)
+			return
+		}
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, hubMaxBody))
 	if err != nil {

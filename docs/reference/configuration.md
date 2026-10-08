@@ -34,6 +34,12 @@ A complete annotated example is in
 | `max_body_bytes` | `26214400` (25 MB) | larger requests are rejected |
 | `shutdown_timeout` | `5m` | on stop, wait this long for running deploys |
 | `api_token_env` | – | env var with the Bearer token for `/status`, `/history`, `/deploy` and the CLI. Without it `/status` is open and manual deploys are disabled |
+| `tls_cert_file`, `tls_key_file` | – | serve HTTPS ([details](../guides/tls.md)); re-read when they change |
+| `tls_client_ca_file` | – | CA of client certificates (mTLS) |
+| `tls_client_auth` | `optional` with a CA | `optional` or `require` |
+| `tls_min_version` | `1.2` | or `1.3` |
+| `api_client_names` | – | the API also needs a client certificate with one of these names |
+| `pprof` | `false` | `/debug/pprof/` behind the token ([details](../guides/observability.md#pprof)) |
 
 ## `[logging]`
 
@@ -41,6 +47,7 @@ A complete annotated example is in
 |---|---|---|
 | `directory` | `/var/log/nimdeploy` | one subdirectory per deploy (user install: `~/.local/state/nimdeploy`) |
 | `retain` | `30` | log files kept per deploy; `0` keeps all |
+| `format` | `text` | service log as `text` or `json` ([details](../guides/observability.md#json-logs)); secrets are hidden in both |
 
 ## `[notify]`
 
@@ -91,6 +98,30 @@ See [Notifications](../guides/notifications.md).
 | `api_token_env` | – | env var with an API token allowed to purge the cache |
 | `api_url` | `https://api.cloudflare.com/client/v4` | |
 
+## `[hub]` TLS
+
+Besides `url`, `agent`, `token_env`, `send_log_tail` and `heartbeat`, the
+agent takes `ca_file` (the hub's CA) and `cert_file`/`key_file` (its client
+certificate, when the hub requires one). See [TLS](../guides/tls.md#hub-and-agents).
+
+## `[otel]`
+
+OpenTelemetry export over OTLP/HTTP ([details](../guides/observability.md)).
+
+| Key | Default | |
+|---|---|---|
+| `endpoint` | – | e.g. `http://otel-collector:4318`; nothing is exported without it |
+| `traces` | `true` | |
+| `logs` | `false` | the service log as OTLP log records |
+| `metrics` | `false` | the `/metrics` values every `metrics_interval` |
+| `metrics_interval` | `1m` | at least `5s` |
+| `sample_ratio` | `1.0` | fraction of new traces kept |
+| `propagate` | `true` | continue an authenticated request's `traceparent` |
+| `service_name` | `nimdeploy` | |
+| `headers_env` | – | env var with `key=value,key2=value2` headers |
+| `timeout` | `10s` | per export request |
+| `ca_file`, `cert_file`, `key_file` | – | TLS and mTLS towards the collector |
+
 ## `[labels]`
 
 `key = "value"` pairs for every deploy on this server, e.g. `client`,
@@ -115,12 +146,12 @@ One table per deploy. The name is used in the CLI, the log directory and
 
 | Key | Default | |
 |---|---|---|
-| `path` | required (unless `schedule`) | URL path the git host posts to, e.g. `/hooks/shop` |
+| `path` | required (unless `schedule`) | URL path the git host posts to, e.g. `/hooks/shop`. Several deploys may [share one](../guides/generic.md#several-deploys-on-one-path) |
 | `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), `generic` for any JSON webhook ([details](../guides/generic.md)), `woocommerce` ([details](../guides/woocommerce.md)), `stripe`, `paddle`, `lemonsqueezy` ([details](../guides/payments.md)) |
 | `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored. Optional for `generic` |
 | `branch` | `main` | pushes to other branches are ignored. Not for `generic` |
 | `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
-| `command` | required | run directly, no shell |
+| `command` | required, unless `ansible` | run directly, no shell |
 | `args` | – | arguments; for an inline script use `command = "/bin/bash"`, `args = ["-c", "..."]` |
 | `working_directory` | service's cwd | |
 | `env` | – | extra `KEY=VALUE` entries, e.g. `PATH=...` |
@@ -130,7 +161,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `log_output` | `true` | `false` keeps only the header and footer lines in the log |
 | `wait_for_ci` | – | GitHub Actions workflow names that must pass first ([details](../guides/wait-for-ci.md)) |
 | `ci_timeout` | `30m` | |
-| `when` | – | table of `"json.path" = value` (or list of values) that must all match; otherwise `200 ignored` |
+| `when` | – | table of `"json.path" = value`, a list of values, or a table of [operators](../guides/generic.md#operators) (`match`, `not`, `gt`, `exists`...), that must all match; otherwise `200 ignored` |
 | `params` | – | table of values taken from the JSON and passed as environment variables, each validated ([details](../guides/generic.md#params)) |
 | `queue_key` | – | param whose value gets its own lock and queue |
 | `queue_mode` | `latest` (`all` for woocommerce) | `latest`: only the newest waiting run is kept. `all`: every run waits its turn, in order, saved in `queue.json` so a restart resumes them (and runs again one it interrupted) |
@@ -143,6 +174,9 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `events` | – | stripe, paddle, lemonsqueezy: event types that run ([details](../guides/payments.md)) |
 | `email` | – | table: `on`, `to`, `to_from`, `bcc`, `subject`, `template`, `secrets`, `once` ([details](../guides/email.md)) |
 | `labels` | – | table merged over `[labels]` for this deploy ([details](../guides/labels.md)) |
+| `ansible` | – | table: run `ansible-playbook`/`ansible-pull` instead of `command` ([details](../guides/ansible.md#options)) |
+| `when_any` | – | like `when`, but one condition is enough ([details](../guides/generic.md#when_any-one-of-them-is-enough)) |
+| `client_names` | – | only a client certificate with one of these names may call the webhook ([details](../guides/tls.md)) |
 | `payload_file` | `true` for generic, woocommerce and payments | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |
 
 WooCommerce adds `store_url`, `webhook_url`, `api_key_env`, `api_secret_env`,

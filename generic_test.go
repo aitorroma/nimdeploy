@@ -56,7 +56,8 @@ func (e *env) send(t *testing.T, o sendOpts) *httptest.ResponseRecorder {
 
 func (e *env) waitIdleName(t *testing.T, name string) State {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	// Generous: Ansible runs under -race on a busy machine take a while.
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		e.runner.mu.Lock()
 		busy := false

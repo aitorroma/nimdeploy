@@ -98,8 +98,42 @@ fi
 
 # --- 3. switch and reload -------------------------------------------------------------------
 PREVIOUS=$(readlink "$CURRENT" 2>/dev/null || true)
-cat >"$ECOSYSTEM" <<EOF
+# The ecosystem file reads shared/.env itself each time pm2 loads it, so a
+# reload passes every variable, also those added since the process was
+# created ("pm2 reload --update-env" alone doesn't add new ones). The values
+# stay in shared/.env and aren't copied here.
+cat >"$ECOSYSTEM" <<'JS'
 // Written by deploy-nuxt.sh on each deploy; edit the wrapper script instead.
+const fs = require("fs");
+
+// Reads a .env the way the deploy's bash does for the usual forms: KEY=value,
+// KEY="value" (\" \\ \$ \` unescaped), KEY='value', "export KEY=...",
+// comments and blank lines.
+function readEnv(file) {
+  const env = {};
+  let text = "";
+  try { text = fs.readFileSync(file, "utf8"); } catch { return env; }
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim().replace(/^export\s+/, "");
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if (v.startsWith('"')) {
+      const end = v.slice(1).search(/(?<!\\)"/) + 1;
+      v = v.slice(1, end > 0 ? end : undefined).replace(/\\(["\\$`])/g, "$1");
+    } else if (v.startsWith("'")) {
+      const end = v.indexOf("'", 1);
+      v = v.slice(1, end > 0 ? end : undefined);
+    } else {
+      v = v.replace(/\s+#.*$/, "");
+    }
+    env[m[1]] = v;
+  }
+  return env;
+}
+JS
+cat >>"$ECOSYSTEM" <<EOF
+
 module.exports = {
   apps: [{
     name: "$APP_NAME",
@@ -110,6 +144,7 @@ module.exports = {
     max_memory_restart: "400M",
     time: true,
     env: {
+      ...readEnv("$SHARED/.env"),
       NODE_ENV: "production",
       HOST: "$HOST", PORT: "$PORT",
       NITRO_HOST: "$HOST", NITRO_PORT: "$PORT",
@@ -123,7 +158,7 @@ switch_to() {
 	mv -T "$CURRENT.next" "$CURRENT"
 }
 step switch_to "$RELEASE"
-# --update-env passes shared/.env (already exported) to the processes.
+# --update-env applies the env above (shared/.env included) to the processes.
 step pm2 startOrReload "$ECOSYSTEM" --update-env
 
 # --- 4. health check, rollback ----------------------------------------------------------------

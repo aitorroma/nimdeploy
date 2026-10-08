@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -188,6 +189,9 @@ func applyRules(d *DeployConfig, doc any) (params []Param, reason string, err er
 	if reason := matchWhen(d.when, doc); reason != "" {
 		return nil, "when: " + reason, nil
 	}
+	if reason := matchWhenAny(d.whenAny, doc); reason != "" {
+		return nil, reason, nil
+	}
 	params, err = extractParams(d.Params, doc)
 	return params, "", err
 }
@@ -239,12 +243,29 @@ func formatParams(params []Param) string {
 
 // --- when ------------------------------------------------------------------------
 
-// whenCond is one "path = value" condition; a list of values means any of them.
+// whenCond is one condition on a JSON path. A value or list of values means
+// "equals one of them"; a table holds operators that must all hold:
+//
+//	"action" = "deploy"                       equals
+//	"env" = ["stage", "prod"]                 equals one of them
+//	"ref" = { match = "^refs/tags/v" }        regular expression
+//	"user" = { not = "bot", not_in = [...] }  differs
+//	"size" = { gt = 10, lte = 100 }           numbers
+//	"meta.dry_run" = { exists = false }       present or not
+//	"title" = { prefix = "[deploy]", contains = "x", suffix = "!" }
 type whenCond struct {
 	from   string
 	path   []pathStep
-	values []string
+	values []string // equals one of them (also "in")
+
+	notIn                []string
+	match, notMatch      *regexp.Regexp
+	exists               *bool
+	gt, gte, lt, lte     *float64
+	prefix, suffix, cont string
 }
+
+var whenOps = []string{"in", "not", "not_in", "match", "not_match", "exists", "gt", "gte", "lt", "lte", "prefix", "suffix", "contains"}
 
 func parseWhen(when map[string]any) ([]whenCond, error) {
 	conds := make([]whenCond, 0, len(when))
@@ -256,20 +277,17 @@ func parseWhen(when map[string]any) ([]whenCond, error) {
 		c := whenCond{from: from, path: path}
 		switch v := when[from].(type) {
 		case []any:
-			if len(v) == 0 {
-				return nil, fmt.Errorf("when %q: empty list", from)
+			if c.values, err = scalarList(v); err != nil {
+				return nil, fmt.Errorf("when %q: %w", from, err)
 			}
-			for _, item := range v {
-				s, ok := scalarString(item)
-				if !ok {
-					return nil, fmt.Errorf("when %q: values must be strings, numbers or booleans", from)
-				}
-				c.values = append(c.values, s)
+		case map[string]any:
+			if err := c.parseOps(v); err != nil {
+				return nil, fmt.Errorf("when %q: %w", from, err)
 			}
 		default:
 			s, ok := scalarString(v)
 			if !ok {
-				return nil, fmt.Errorf("when %q: value must be a string, number, boolean or a list of them", from)
+				return nil, fmt.Errorf("when %q: value must be a string, number, boolean, a list of them or a table of operators", from)
 			}
 			c.values = []string{s}
 		}
@@ -278,26 +296,190 @@ func parseWhen(when map[string]any) ([]whenCond, error) {
 	return conds, nil
 }
 
-// matchWhen returns "" when every condition holds, else why not.
-func matchWhen(conds []whenCond, doc any) string {
-	for _, c := range conds {
-		raw, found := lookupJSON(doc, c.path)
-		got, ok := scalarString(raw)
-		if !found || !ok {
+func scalarList(v []any) ([]string, error) {
+	if len(v) == 0 {
+		return nil, errors.New("empty list")
+	}
+	out := make([]string, 0, len(v))
+	for _, item := range v {
+		s, ok := scalarString(item)
+		if !ok {
+			return nil, errors.New("values must be strings, numbers or booleans")
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (c *whenCond) parseOps(ops map[string]any) error {
+	if len(ops) == 0 {
+		return errors.New("empty table of operators")
+	}
+	str := func(op string, v any) (string, error) {
+		s, ok := scalarString(v)
+		if !ok {
+			return "", fmt.Errorf("%s needs a string", op)
+		}
+		return s, nil
+	}
+	num := func(op string, v any) (*float64, error) {
+		s, ok := scalarString(v)
+		f, err := strconv.ParseFloat(s, 64)
+		if !ok || err != nil {
+			return nil, fmt.Errorf("%s needs a number", op)
+		}
+		return &f, nil
+	}
+	list := func(op string, v any) ([]string, error) {
+		if l, ok := v.([]any); ok {
+			return scalarList(l)
+		}
+		s, ok := scalarString(v)
+		if !ok {
+			return nil, fmt.Errorf("%s needs a value or a list", op)
+		}
+		return []string{s}, nil
+	}
+	re := func(op string, v any) (*regexp.Regexp, error) {
+		s, err := str(op, v)
+		if err != nil {
+			return nil, err
+		}
+		r, err := regexp.Compile(s)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		return r, nil
+	}
+	var err error
+	for _, op := range sortedKeys(ops) {
+		v := ops[op]
+		switch op {
+		case "in":
+			c.values, err = list(op, v)
+		case "not", "not_in":
+			var l []string
+			l, err = list(op, v)
+			c.notIn = append(c.notIn, l...)
+		case "match":
+			c.match, err = re(op, v)
+		case "not_match":
+			c.notMatch, err = re(op, v)
+		case "exists":
+			b, ok := v.(bool)
+			if !ok {
+				return errors.New("exists needs true or false")
+			}
+			c.exists = &b
+		case "gt":
+			c.gt, err = num(op, v)
+		case "gte":
+			c.gte, err = num(op, v)
+		case "lt":
+			c.lt, err = num(op, v)
+		case "lte":
+			c.lte, err = num(op, v)
+		case "prefix":
+			c.prefix, err = str(op, v)
+		case "suffix":
+			c.suffix, err = str(op, v)
+		case "contains":
+			c.cont, err = str(op, v)
+		default:
+			return fmt.Errorf("unknown operator %q (allowed: %s)", op, strings.Join(whenOps, ", "))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if c.exists != nil && !*c.exists && len(ops) > 1 {
+		return errors.New("exists = false can't be combined with other operators")
+	}
+	return nil
+}
+
+// check returns "" when the condition holds for doc, else why not.
+func (c *whenCond) check(doc any) string {
+	raw, found := lookupJSON(doc, c.path)
+	if c.exists != nil {
+		if found != *c.exists {
+			if found {
+				return c.from + " is present"
+			}
 			return c.from + " is missing"
 		}
-		matched := false
-		for _, want := range c.values {
-			if got == want {
-				matched = true
-				break
-			}
+		if !found {
+			return ""
 		}
-		if !matched {
-			return fmt.Sprintf("%s is %q, not %s", c.from, truncate(got, 40), strings.Join(c.values, " or "))
+	}
+	got, ok := scalarString(raw)
+	if !found || !ok {
+		return c.from + " is missing"
+	}
+	show := fmt.Sprintf("%s is %q", c.from, truncate(got, 40))
+	if len(c.values) > 0 && !slices.Contains(c.values, got) {
+		return show + ", not " + strings.Join(c.values, " or ")
+	}
+	if slices.Contains(c.notIn, got) {
+		return show
+	}
+	if c.match != nil && !c.match.MatchString(got) {
+		return show + ", does not match " + c.match.String()
+	}
+	if c.notMatch != nil && c.notMatch.MatchString(got) {
+		return show + ", matches " + c.notMatch.String()
+	}
+	if c.prefix != "" && !strings.HasPrefix(got, c.prefix) {
+		return show + ", does not start with " + c.prefix
+	}
+	if c.suffix != "" && !strings.HasSuffix(got, c.suffix) {
+		return show + ", does not end with " + c.suffix
+	}
+	if c.cont != "" && !strings.Contains(got, c.cont) {
+		return show + ", does not contain " + c.cont
+	}
+	if c.gt != nil || c.gte != nil || c.lt != nil || c.lte != nil {
+		n, err := strconv.ParseFloat(got, 64)
+		switch {
+		case err != nil:
+			return show + ", not a number"
+		case c.gt != nil && !(n > *c.gt):
+			return fmt.Sprintf("%s, not > %v", show, *c.gt)
+		case c.gte != nil && !(n >= *c.gte):
+			return fmt.Sprintf("%s, not >= %v", show, *c.gte)
+		case c.lt != nil && !(n < *c.lt):
+			return fmt.Sprintf("%s, not < %v", show, *c.lt)
+		case c.lte != nil && !(n <= *c.lte):
+			return fmt.Sprintf("%s, not <= %v", show, *c.lte)
 		}
 	}
 	return ""
+}
+
+// matchWhen returns "" when every condition holds, else why not.
+func matchWhen(conds []whenCond, doc any) string {
+	for i := range conds {
+		if reason := conds[i].check(doc); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// matchWhenAny returns "" when there are no conditions or one of them holds.
+func matchWhenAny(conds []whenCond, doc any) string {
+	if len(conds) == 0 {
+		return ""
+	}
+	var reasons []string
+	for i := range conds {
+		reason := conds[i].check(doc)
+		if reason == "" {
+			return ""
+		}
+		reasons = append(reasons, reason)
+	}
+	return "none of when_any: " + strings.Join(reasons, "; ")
 }
 
 // --- JSON paths --------------------------------------------------------------------

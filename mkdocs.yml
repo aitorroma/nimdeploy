@@ -101,6 +101,9 @@ nav:
       - Emails and secret links: guides/email.md
       - Labels (client, environment): guides/labels.md
       - Central hub (Docker, Kubernetes): guides/hub.md
+      - Ansible (playbooks, pull, collection): guides/ansible.md
+      - TLS and client certificates: guides/tls.md
+      - Logs, traces and OpenTelemetry: guides/observability.md
   - Reverse proxy:
       - proxy/index.md
       - nginx: proxy/nginx.md

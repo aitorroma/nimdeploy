@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -9,8 +10,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,12 +30,24 @@ func NewServer(cfg *Config, runner *Runner) *Server {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	byPath := map[string][]*DeployConfig{}
+	var paths []string
 	for _, name := range s.cfg.DeployNames() {
 		d := s.cfg.Deploy[name]
 		if d.Path == "" {
 			continue // scheduled only
 		}
-		mux.HandleFunc("POST "+d.Path, s.countWebhook(d.Name, s.handleWebhook(d)))
+		if byPath[d.Path] == nil {
+			paths = append(paths, d.Path)
+		}
+		byPath[d.Path] = append(byPath[d.Path], d)
+	}
+	for _, path := range paths {
+		if ds := byPath[path]; len(ds) == 1 {
+			mux.HandleFunc("POST "+path, s.webhookHandler(ds[0]))
+		} else {
+			mux.HandleFunc("POST "+path, s.handleShared(ds))
+		}
 	}
 	mux.HandleFunc("GET /status", s.requireToken(false, s.handleStatusAll))
 	mux.HandleFunc("GET /status/{name}", s.requireToken(false, s.handleStatus))
@@ -43,13 +58,56 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	if s.cfg.Server.Pprof {
+		mux.HandleFunc("GET /debug/pprof/", s.requireToken(true, pprof.Index))
+		mux.HandleFunc("GET /debug/pprof/cmdline", s.requireToken(true, pprof.Cmdline))
+		mux.HandleFunc("GET /debug/pprof/profile", s.requireToken(true, pprof.Profile))
+		mux.HandleFunc("GET /debug/pprof/symbol", s.requireToken(true, pprof.Symbol))
+		mux.HandleFunc("GET /debug/pprof/trace", s.requireToken(true, pprof.Trace))
+	}
 
 	var h http.Handler = mux
 	if base := s.cfg.Server.BasePath; base != "" {
 		h = http.StripPrefix(base, mux)
 	}
-	return s.accessLog(h)
+	return s.traceRequests(s.accessLog(h))
 }
+
+// traceRequests opens a server span for each POST (webhooks, manual deploys,
+// rollbacks). A caller's traceparent is only adopted once the request has
+// authenticated (see authenticated).
+func (s *Server) traceRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tr := s.runner.tracer
+		if tr == nil || r.Method != http.MethodPost {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sp := tr.start(r.Method+" "+r.URL.Path, spanServer, traceContext{}, time.Now())
+		if s.cfg.OTel.propagate {
+			if rc, ok := parseTraceparent(r.Header.Get("traceparent")); ok {
+				sp.remote = rc
+			}
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r.WithContext(withSpan(r.Context(), sp)))
+		sp.set(spanAttr{"http.request.method", r.Method}, spanAttr{"url.path", r.URL.Path},
+			spanAttr{"http.response.status_code", int64(rec.status)}, spanAttr{"client.address", s.clientIP(r)})
+		if ua := r.UserAgent(); ua != "" {
+			sp.set(spanAttr{"user_agent.original", ua})
+		}
+		if id := deliveryID(r); id != "" {
+			sp.set(spanAttr{"nimdeploy.delivery", id})
+		}
+		if rec.status >= 500 {
+			sp.fail(http.StatusText(rec.status))
+		}
+		sp.End()
+	})
+}
+
+// authenticated marks the request as verified: its traceparent can be trusted.
+func authenticated(r *http.Request) { spanFrom(r.Context()).adoptRemote() }
 
 type statusRecorder struct {
 	http.ResponseWriter
@@ -70,8 +128,12 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		if strings.HasSuffix(r.URL.Path, "/healthz") && rec.status == http.StatusOK {
 			return
 		}
-		log.Printf("http %s %s status=%d client=%s delivery=%s duration=%s",
-			r.Method, r.URL.Path, rec.status, s.clientIP(r), deliveryID(r), formatDuration(time.Since(start)))
+		trace := ""
+		if id := spanFrom(r.Context()).TraceID(); id != "" {
+			trace = " trace_id=" + id
+		}
+		log.Printf("http %s %s status=%d client=%s delivery=%s duration=%s%s",
+			r.Method, r.URL.Path, rec.status, s.clientIP(r), deliveryID(r), formatDuration(time.Since(start)), trace)
 	})
 }
 
@@ -142,6 +204,10 @@ func (s *Server) trustedProxy(ip string) bool {
 // configured token, mandatory endpoints are disabled and the rest are open.
 func (s *Server) requireToken(mandatory bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !clientAllowed(r, s.cfg.Server.APIClientNames) {
+			writeError(w, http.StatusForbidden, "client certificate required")
+			return
+		}
 		token := s.cfg.Server.apiToken
 		if token == "" {
 			if mandatory {
@@ -157,8 +223,23 @@ func (s *Server) requireToken(mandatory bool, next http.HandlerFunc) http.Handle
 			writeError(w, http.StatusUnauthorized, "invalid or missing token")
 			return
 		}
+		authenticated(r)
 		next(w, r)
 	}
+}
+
+// webhookHandler is a deploy's webhook with its client certificate check
+// (client_names) and its metrics.
+func (s *Server) webhookHandler(d *DeployConfig) http.HandlerFunc {
+	next := s.handleWebhook(d)
+	return s.countWebhook(d.Name, func(w http.ResponseWriter, r *http.Request) {
+		if !clientAllowed(r, d.ClientNames) {
+			log.Printf("deploy=%s rejected: no client certificate for %s from %s", d.Name, strings.Join(d.ClientNames, ", "), s.clientIP(r))
+			writeError(w, http.StatusForbidden, "client certificate required")
+			return
+		}
+		next(w, r)
+	})
 }
 
 func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
@@ -183,6 +264,7 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid signature")
 			return
 		}
+		authenticated(r)
 
 		// Some hosts can send form-encoded "payload=" instead of JSON. Fall
 		// back to the raw body so a plain `curl -d '{...}'` also works.
@@ -231,7 +313,7 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			return
 		}
 
-		s.submit(w, d, Trigger{
+		s.submit(w, r, d, Trigger{
 			Source:     TriggerWebhook,
 			Provider:   d.Provider,
 			Delivery:   ev.Delivery,
@@ -259,6 +341,7 @@ func (s *Server) handleGeneric(d *DeployConfig) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid signature or token")
 			return
 		}
+		authenticated(r)
 		delivery := firstHeader(r, d.DeliveryHeader, "X-Request-ID")
 		params, ok := s.payloadRules(w, d, delivery, body)
 		if !ok {
@@ -285,14 +368,14 @@ func (s *Server) handleGeneric(d *DeployConfig) http.HandlerFunc {
 		if d.payloadFile {
 			t.Payload = body
 		}
-		s.submit(w, d, t)
+		s.submit(w, r, d, t)
 	}
 }
 
 // payloadRules applies a deploy's when conditions and extracts its params.
 // It answers the request itself (200 ignored, 400 invalid) when it returns false.
 func (s *Server) payloadRules(w http.ResponseWriter, d *DeployConfig, delivery string, body []byte) ([]Param, bool) {
-	if len(d.when) == 0 && len(d.Params) == 0 {
+	if len(d.when) == 0 && len(d.whenAny) == 0 && len(d.Params) == 0 {
 		return nil, true
 	}
 	doc, err := decodeJSON(body)
@@ -322,7 +405,12 @@ type manualRequest struct {
 	// (when/params/statuses apply); "nimdeploy woocommerce replay" uses it.
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Event   string          `json:"event,omitempty"`
+	// Delivery identifies the request: the same one twice runs once (the
+	// Ansible collection sends one so retries are safe), and the run shows it.
+	Delivery string `json:"delivery,omitempty"`
 }
+
+var manualDeliveryRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,100}$`)
 
 func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.cfg.Deploy[r.PathValue("name")]
@@ -345,6 +433,10 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 	if req.User == "" {
 		req.User = "api"
 	}
+	if req.Delivery != "" && !manualDeliveryRe.MatchString(req.Delivery) {
+		writeError(w, http.StatusBadRequest, "delivery: letters, digits, . _ : - (max 100)")
+		return
+	}
 	t := Trigger{
 		Source:     TriggerManual,
 		Provider:   d.Provider,
@@ -352,6 +444,7 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 		Commit:     req.Commit,
 		Pusher:     req.User,
 		Event:      req.Event,
+		Delivery:   req.Delivery,
 	}
 	if len(req.Payload) > 0 {
 		if len(req.Params) > 0 {
@@ -387,7 +480,7 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 	if d.Provider != providerGeneric && d.Provider != providerWooCommerce {
 		t.Ref, t.Branch = "refs/heads/"+d.Branch, d.Branch
 	}
-	s.submit(w, d, t)
+	s.submit(w, r, d, t)
 }
 
 // handleRollback redeploys the last good commit, or the one given.
@@ -421,7 +514,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	log.Printf("deploy=%s rollback to %s requested by %s", d.Name, shortSHA(commit), firstNonEmpty(req.User, "api"))
-	s.submit(w, d, Trigger{
+	s.submit(w, r, d, Trigger{
 		Source:     TriggerRollback,
 		Provider:   d.Provider,
 		Repository: d.Repository,
@@ -432,7 +525,8 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {
+func (s *Server) submit(w http.ResponseWriter, r *http.Request, d *DeployConfig, t Trigger) {
+	t.parent = spanFrom(r.Context())
 	res, err := s.runner.Submit(d.Name, t)
 	switch {
 	case errors.Is(err, ErrDuplicate):
@@ -464,6 +558,70 @@ func (s *Server) submit(w http.ResponseWriter, d *DeployConfig, t Trigger) {
 			log.Print(msg)
 		}
 		writeJSON(w, http.StatusAccepted, res)
+	}
+}
+
+// bufferedResponse keeps one deploy's answer to a shared webhook.
+type bufferedResponse struct {
+	header http.Header
+	code   int
+	body   bytes.Buffer
+}
+
+func (b *bufferedResponse) Header() http.Header         { return b.header }
+func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+func (b *bufferedResponse) WriteHeader(code int)        { b.code = code }
+
+type sharedResult struct {
+	Deploy   string          `json:"deploy"`
+	Code     int             `json:"code"`
+	Response json.RawMessage `json:"response"`
+}
+
+// handleShared serves a path several deploys share: the webhook goes to each
+// of them, in name order, and each one decides on its own (its when, params,
+// queue). One being ignored or refused doesn't stop the others.
+func (s *Server) handleShared(ds []*DeployConfig) http.HandlerFunc {
+	handlers := make([]http.HandlerFunc, len(ds))
+	for i, d := range ds {
+		handlers[i] = s.webhookHandler(d)
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
+		if err != nil {
+			writeError(w, http.StatusRequestEntityTooLarge, "cannot read body")
+			return
+		}
+		results := make([]sharedResult, 0, len(ds))
+		accepted, ok := false, false
+		code := 0
+		for i, d := range ds {
+			req := r.Clone(r.Context())
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.ContentLength = int64(len(body))
+			rec := &bufferedResponse{header: http.Header{}, code: http.StatusOK}
+			handlers[i](rec, req)
+			res := bytes.TrimSpace(rec.body.Bytes())
+			if !json.Valid(res) {
+				res, _ = json.Marshal(string(res))
+			}
+			results = append(results, sharedResult{Deploy: d.Name, Code: rec.code, Response: res})
+			switch {
+			case rec.code == http.StatusAccepted:
+				accepted = true
+			case rec.code/100 == 2:
+				ok = true
+			case code == 0:
+				code = rec.code // the first refusal, if nothing was accepted
+			}
+		}
+		switch {
+		case accepted:
+			code = http.StatusAccepted
+		case ok:
+			code = http.StatusOK
+		}
+		writeJSON(w, code, map[string]any{"results": results})
 	}
 }
 

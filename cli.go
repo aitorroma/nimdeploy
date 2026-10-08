@@ -330,6 +330,9 @@ func nginxSnippet(cfg *Config, api bool) string {
 			host = "127.0.0.1"
 		}
 		upstream = "http://" + net.JoinHostPort(host, port)
+		if cfg.Server.tlsEnabled() {
+			upstream = "https://" + net.JoinHostPort(host, port)
+		}
 	}
 	maxMB := (cfg.Server.MaxBodyBytes + 1<<20 - 1) >> 20
 	base := cfg.Server.BasePath
@@ -349,11 +352,20 @@ location %s {
 }
 `, comment, match, upstream, maxMB)
 	}
+	byPath := map[string][]string{}
+	var paths []string
 	for _, name := range cfg.DeployNames() {
-		if cfg.Deploy[name].Path == "" {
+		path := cfg.Deploy[name].Path
+		if path == "" {
 			continue // scheduled only: no webhook
 		}
-		block("= "+base+cfg.Deploy[name].Path, "deploy."+name)
+		if byPath[path] == nil {
+			paths = append(paths, path)
+		}
+		byPath[path] = append(byPath[path], "deploy."+name)
+	}
+	for _, path := range paths {
+		block("= "+base+path, strings.Join(byPath[path], ", "))
 	}
 	if api {
 		block("= "+base+"/status", "API: status (bearer token)")

@@ -3,13 +3,23 @@
 | Endpoint | |
 |---|---|
 | `POST <path>` | webhook. `202` started or queued · `200` ping, ignored (other branch, `when` not met) or duplicate · `400` invalid JSON or invalid param · `401` bad signature or token · `409` running and `queue = false` |
-| `POST /deploy/{name}` | manual deploy, optional body `{"commit":"...","user":"...","params":{"NAME":"value"}}`. Token required |
+| `POST /deploy/{name}` | manual deploy, optional body `{"commit":"...","user":"...","params":{"NAME":"value"},"delivery":"id"}`. The same `delivery` twice runs once (`200` duplicate). Token required |
 | `GET /status` | state of every deploy (`?label=key=value` filters, repeatable). Token required if `api_token_env` is set |
 | `GET /status/{name}` | state of one deploy. Same |
 | `GET /history/{name}?limit=N` | past deploys from the kept logs, newest first. Same |
 | `POST /rollback/{name}` | redeploy the last good commit, or `{"commit":"..."}`. Token required |
 | `GET /metrics` | Prometheus metrics ([details](../guides/metrics.md)). Token required if `api_token_env` is set |
 | `GET /healthz` | liveness, always open |
+| `GET /debug/pprof/` | Go profiler, with `server.pprof = true` ([details](../guides/observability.md#pprof)). Token required |
+
+A path shared by [several deploys](../guides/generic.md#several-deploys-on-one-path)
+answers `{"results": [{"deploy": "...", "code": 202, "response": {...}}, ...]}`.
+
+With [client certificates](../guides/tls.md), deploys with `client_names` and
+the API with `api_client_names` answer `403` to other certificates.
+
+Every POST continues a W3C `traceparent` once authenticated, when
+[OpenTelemetry](../guides/observability.md) is on.
 
 With `api_token_env` set, send `Authorization: Bearer <token>`.
 

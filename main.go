@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -152,9 +153,24 @@ func (s *handlerSwap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func serve(configPath string, cfg *Config) {
+	installLogSink(cfg.Logging.Format, "nimdeploy")
+	setLogSecrets(cfg.secretValues())
 	runner, err := NewRunner(cfg, NewNotifier(cfg))
 	if err != nil {
 		log.Fatalf("runner: %v", err)
+	}
+	tr, err := newTracer(cfg, runner.metrics)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if tr != nil {
+		runner.tracer = tr
+		tr.setMetricsSource(func() string { return renderMetrics(runner.config(), runner) })
+		if cfg.OTel.Logs {
+			setLogExport(tr.enqueueLog)
+		}
+		log.Printf("otel: exporting to %s (traces %v, logs %v, metrics %v, sample ratio %g)",
+			cfg.OTel.Endpoint, cfg.OTel.traces, cfg.OTel.Logs, cfg.OTel.Metrics, cfg.OTel.ratio)
 	}
 	handler := &handlerSwap{}
 	handler.Store(NewServer(cfg, runner).Routes())
@@ -162,6 +178,13 @@ func serve(configPath string, cfg *Config) {
 	ln, err := listen(cfg.Server)
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.Server.Listen, err)
+	}
+	if s := cfg.Server; s.tlsEnabled() {
+		tc, err := serverTLS(s.TLSCertFile, s.TLSKeyFile, s.TLSClientCAFile, s.TLSClientAuth, s.TLSMinVersion)
+		if err != nil {
+			log.Fatalf("tls: %v", err)
+		}
+		ln = tls.NewListener(ln, tc)
 	}
 	if cfg.Server.apiToken == "" && !isLocal(cfg.Server) {
 		log.Printf("warning: listening on %s without server.api_token_env: /status is readable by anyone who can reach it", cfg.Server.Listen)
@@ -178,7 +201,14 @@ func serve(configPath string, cfg *Config) {
 	errCh := make(chan error, 1)
 	go func() {
 		logDeploys(cfg)
-		log.Printf("nimdeploy %s listening on %s, logs in %s", version, cfg.Server.Listen, cfg.Logging.Directory)
+		scheme := "http"
+		if cfg.Server.tlsEnabled() {
+			scheme = "https"
+			if cfg.Server.TLSClientCAFile != "" {
+				scheme += ", client certificates " + cfg.Server.TLSClientAuth
+			}
+		}
+		log.Printf("nimdeploy %s listening on %s (%s), logs in %s", version, cfg.Server.Listen, scheme, cfg.Logging.Directory)
 		errCh <- srv.Serve(ln)
 	}()
 
@@ -196,6 +226,8 @@ loop:
 				log.Printf("reload failed, keeping current config: %v", err)
 			} else {
 				cfg = next
+				installLogSink(cfg.Logging.Format, "nimdeploy")
+				setLogSecrets(cfg.secretValues())
 				runner.SetConfig(cfg, NewNotifier(cfg))
 				handler.Store(NewServer(cfg, runner).Routes())
 				logDeploys(cfg)
@@ -216,6 +248,8 @@ loop:
 		log.Printf("http shutdown: %v", err)
 	}
 	runner.Shutdown(cfg.Server.ShutdownTimeout.Duration)
+	setLogExport(nil)
+	tr.Shutdown()
 }
 
 func reloadConfig(path string, current *Config) (*Config, error) {
@@ -228,6 +262,14 @@ func reloadConfig(path string, current *Config) (*Config, error) {
 	}
 	if next.Server.Listen != current.Server.Listen {
 		return nil, fmt.Errorf("server.listen changed: restart needed")
+	}
+	if fmt.Sprint(next.OTel) != fmt.Sprint(current.OTel) {
+		return nil, fmt.Errorf("[otel] changed: restart needed")
+	}
+	a, b := next.Server, current.Server
+	if a.TLSCertFile != b.TLSCertFile || a.TLSKeyFile != b.TLSKeyFile || a.TLSClientCAFile != b.TLSClientCAFile ||
+		a.TLSClientAuth != b.TLSClientAuth || a.TLSMinVersion != b.TLSMinVersion {
+		return nil, fmt.Errorf("server TLS settings changed: restart needed (renewed files are picked up without one)")
 	}
 	if next.Logging.Directory != current.Logging.Directory {
 		return nil, fmt.Errorf("logging.directory changed: restart needed")

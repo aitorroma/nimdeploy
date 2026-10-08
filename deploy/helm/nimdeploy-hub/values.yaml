@@ -13,6 +13,14 @@ hub:
   # Cf-Access-Authenticated-User-Email). Only if nothing else can reach the hub.
   trustedHeader: ""
   retainDays: 90
+  logFormat: text      # or json
+  # Native TLS (the hub terminates HTTPS) and agent client certificates.
+  # For mTLS expose the hub with service.type LoadBalancer or an Ingress with
+  # TLS passthrough: it must see the client certificate.
+  tls:
+    existingSecret: ""   # kubernetes.io/tls Secret (tls.crt, tls.key)
+    clientCASecret: ""   # Secret with ca.crt: the agents' CA
+    agentCerts: optional # or require: each agent's certificate must carry its name
   extraEnv: []
   resources:
     requests: {cpu: 20m, memory: 32Mi}

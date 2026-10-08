@@ -33,6 +33,20 @@ spec:
               value: {{ include "hub.databaseURL" . | quote }}
             - name: NIMDEPLOY_HUB_RETAIN_DAYS
               value: {{ .Values.hub.retainDays | quote }}
+            - name: NIMDEPLOY_HUB_LOG_FORMAT
+              value: {{ .Values.hub.logFormat | quote }}
+            {{- with .Values.hub.tls.existingSecret }}
+            - name: NIMDEPLOY_HUB_TLS_CERT
+              value: /tls/server/tls.crt
+            - name: NIMDEPLOY_HUB_TLS_KEY
+              value: /tls/server/tls.key
+            {{- end }}
+            {{- if .Values.hub.tls.clientCASecret }}
+            - name: NIMDEPLOY_HUB_TLS_CLIENT_CA
+              value: /tls/clients/ca.crt
+            - name: NIMDEPLOY_HUB_AGENT_CERTS
+              value: {{ .Values.hub.tls.agentCerts | quote }}
+            {{- end }}
             {{- with .Values.hub.trustedHeader }}
             - name: NIMDEPLOY_HUB_TRUSTED_HEADER
               value: {{ . | quote }}
@@ -50,8 +64,9 @@ spec:
             {{- end }}
           ports:
             - {name: http, containerPort: 9100}
+          {{- $scheme := ternary "HTTPS" "HTTP" (not (empty .Values.hub.tls.existingSecret)) }}
           startupProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /healthz, port: http, scheme: {{ $scheme }}}
             periodSeconds: 5
             failureThreshold: 30
           livenessProbe:
@@ -59,10 +74,30 @@ spec:
             tcpSocket: {port: http}
             periodSeconds: 20
           readinessProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet: {path: /healthz, port: http, scheme: {{ $scheme }}}
             periodSeconds: 10
+          {{- if or .Values.hub.tls.existingSecret .Values.hub.tls.clientCASecret }}
+          volumeMounts:
+            {{- if .Values.hub.tls.existingSecret }}
+            - {name: tls-server, mountPath: /tls/server, readOnly: true}
+            {{- end }}
+            {{- if .Values.hub.tls.clientCASecret }}
+            - {name: tls-clients, mountPath: /tls/clients, readOnly: true}
+            {{- end }}
+          {{- end }}
           securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
           resources: {{- toYaml .Values.hub.resources | nindent 12 }}
+      {{- if or .Values.hub.tls.existingSecret .Values.hub.tls.clientCASecret }}
+      volumes:
+        {{- with .Values.hub.tls.existingSecret }}
+        - name: tls-server
+          secret: {secretName: {{ . }}}
+        {{- end }}
+        {{- with .Values.hub.tls.clientCASecret }}
+        - name: tls-clients
+          secret: {secretName: {{ . }}}
+        {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

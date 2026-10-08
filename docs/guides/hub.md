@@ -97,6 +97,14 @@ a NetworkPolicy). Main values:
 | `sqld.persistence.size` | `2Gi` | |
 | `ingress.*` | disabled | |
 | `serviceMonitor.enabled` | `false` | scrape `/metrics` with the Prometheus Operator |
+| `hub.logFormat` | `text` | or `json` |
+| `hub.tls.existingSecret` | – | a `kubernetes.io/tls` Secret: the hub serves HTTPS itself |
+| `hub.tls.clientCASecret` | – | Secret with `ca.crt`: the agents' CA (mTLS) |
+| `hub.tls.agentCerts` | `optional` | or `require` |
+
+For mTLS the hub must see the client certificate: expose it with
+`service.type: LoadBalancer` (or an Ingress with TLS passthrough) instead of
+terminating TLS at the Ingress.
 
 ## Connect a server
 
@@ -197,6 +205,10 @@ nimdeploy hub healthcheck
 | `NIMDEPLOY_HUB_LISTEN` | default `127.0.0.1:9100` (`0.0.0.0:9100` in the image) |
 | `NIMDEPLOY_HUB_TRUSTED_HEADER` | |
 | `NIMDEPLOY_HUB_RETAIN_DAYS` | default `90`; `0` keeps every event |
+| `NIMDEPLOY_HUB_LOG_FORMAT` | `text` or `json` |
+| `NIMDEPLOY_HUB_TLS_CERT`, `NIMDEPLOY_HUB_TLS_KEY` | serve HTTPS ([details](tls.md#hub-and-agents)) |
+| `NIMDEPLOY_HUB_TLS_CLIENT_CA` | CA of the agents' certificates |
+| `NIMDEPLOY_HUB_AGENT_CERTS` | `optional` (default) or `require`: each agent's certificate must carry its name |
 
 Without a token or a trusted header, the hub only starts on a loopback
 address (or with `-no-auth`).

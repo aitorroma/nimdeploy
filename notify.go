@@ -234,6 +234,9 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 		}
 		fmt.Fprintf(&b, " · %s", st.Error)
 	}
+	if st.Ansible != nil {
+		fmt.Fprintf(&b, "\nansible %s", st.Ansible.text())
+	}
 	fmt.Fprintf(&b, "\nlog: %s", logPath)
 
 	if len(tail) > 0 {

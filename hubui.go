@@ -80,6 +80,13 @@ var hubTemplates = template.Must(template.New("hub").Funcs(template.FuncMap{
 		return typ
 	},
 	"lines": func(l []string) string { return strings.Join(l, "\n") },
+	"ansible": func(a *AnsibleSummary) string {
+		text := a.text()
+		if why := a.failure(); why != "" {
+			text += " · " + why
+		}
+		return text
+	},
 	"or": func(a, b string) string {
 		if a != "" {
 			return a
@@ -198,6 +205,7 @@ const hubHTML = `
 {{if .State.FinishedAt}}<dt>Finished</dt><dd title="{{stamp .State.FinishedAt}}">{{ago .State.FinishedAt}}{{if .State.Duration}}, took {{.State.Duration}}{{end}}</dd>
 {{else if .State.StartedAt}}<dt>Started</dt><dd title="{{stamp .State.StartedAt}}">{{ago .State.StartedAt}}</dd>{{end}}
 {{if .State.Error}}<dt>Error</dt><dd class="error">{{.State.Error}}</dd>{{end}}
+{{if .State.Ansible}}<dt>Ansible</dt><dd>{{ansible .State.Ansible}}</dd>{{end}}
 {{if .Labels}}<dt>Labels</dt><dd>{{range $k, $v := .Labels}}<span class="label">{{$k}}={{$v}}</span> {{end}}</dd>{{end}}
 </dl>
 {{end}}

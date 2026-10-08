@@ -23,12 +23,35 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # For the Ansible executor and collection tests (skipped without it).
+      - name: Ansible
+        run: pipx install ansible-core && ansible-playbook --version
       - name: Lint
         run: make lint
       - name: Test
         run: make test
       - name: Build
         run: make build && ./nimdeploy -version
+
+  collection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ansible_collections/aitorroma/nimdeploy-repo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ansible-test sanity
+        run: |
+          set -euo pipefail
+          pip install ansible-core
+          # ansible-test wants the collection at ansible_collections/<ns>/<name>
+          mv ansible_collections/aitorroma/nimdeploy-repo/ansible/ansible_collections/aitorroma/nimdeploy ansible_collections/aitorroma/nimdeploy
+          cd ansible_collections/aitorroma/nimdeploy
+          ansible-test sanity --python 3.12 --local --test validate-modules --test compile --test pep8 \
+            --test yamllint --test shebang --test ansible-doc --test runtime-metadata --test import --test ignores
+          ansible-galaxy collection build
 
   hub-packaging:
     runs-on: ubuntu-latest

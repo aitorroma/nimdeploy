@@ -16,9 +16,22 @@ listen = "127.0.0.1:9000"
 # Without it /status is open and manual deploys are disabled.
 api_token_env = "NIMDEPLOY_API_TOKEN"
 
+# Native HTTPS and client certificates (optional; a reverse proxy is simpler).
+#tls_cert_file = "/etc/nimdeploy/tls/server.pem"
+#tls_key_file = "/etc/nimdeploy/tls/server.key"
+#tls_client_ca_file = "/etc/nimdeploy/tls/clients-ca.pem"   # then client_names per deploy
+#tls_client_auth = "optional"                                # or "require"
+
 [logging]
 directory = "/var/log/nimdeploy"
 retain = 30                   # log files kept per deploy (0 = keep all)
+#format = "json"              # service log as JSON lines (secrets are hidden either way)
+
+# OpenTelemetry (optional): traces of every webhook and deploy, logs, metrics.
+#[otel]
+#endpoint = "http://127.0.0.1:4318"
+#logs = true
+#metrics = true
 
 # Chat notifications (optional). Formats: slack, discord, telegram, json.
 # on = "failure" sends failures and the first success after one (recovery).

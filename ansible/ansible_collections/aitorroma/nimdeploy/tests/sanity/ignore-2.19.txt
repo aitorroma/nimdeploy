@@ -1,0 +1,3 @@
+plugins/modules/nimdeploy_run.py validate-modules:missing-gplv3-license # MIT, like nimdeploy
+plugins/modules/nimdeploy_send.py validate-modules:missing-gplv3-license # MIT, like nimdeploy
+plugins/modules/nimdeploy_status.py validate-modules:missing-gplv3-license # MIT, like nimdeploy

@@ -52,6 +52,15 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
 - **Central hub** in the same binary (`nimdeploy hub serve`): every server
   sends its deploys, signed, to one dashboard by client and environment, with
   an API and metrics. Data in libSQL; Docker Compose and a Helm chart included.
+- **Ansible**: `[deploy.x.ansible]` runs `ansible-playbook` or `ansible-pull`
+  with inventory, limit, tags and extra vars from validated webhook params, and
+  summarises the PLAY RECAP; the `aitorroma.nimdeploy` collection triggers
+  deploys from playbooks.
+- **Rules**: `when` operators (`match`, `not`, `gt`, `exists`...), `when_any`,
+  and several deploys on one webhook path.
+- **TLS and mTLS** without a proxy, client certificates per webhook and per hub agent.
+- **OpenTelemetry**: traces of every deploy (continued into scripts and
+  playbooks), JSON logs with secrets hidden, OTLP logs and metrics, pprof.
 - **Wait for CI** (GitHub Actions) and ✅/❌ **commit statuses**.
 - **Notifications** to Slack, Discord, Telegram or any URL, failures and recoveries.
 - **Behind any proxy**: nginx, HestiaCP, Caddy, Traefik, Cloudflare (proxied or Tunnel), unix socket.

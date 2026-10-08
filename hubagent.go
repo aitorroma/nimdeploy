@@ -56,6 +56,11 @@ type HubConfig struct {
 	TokenEnv    string   `toml:"token_env"`
 	SendLogTail *int     `toml:"send_log_tail"` // log lines sent with failures (0 = none)
 	Heartbeat   Duration `toml:"heartbeat"`
+	// TLS towards the hub: a private CA, and a client certificate when the
+	// hub requires one per agent (mTLS; its name must be the agent's).
+	CAFile   string `toml:"ca_file"`
+	CertFile string `toml:"cert_file"`
+	KeyFile  string `toml:"key_file"`
 
 	token   string
 	logTail int
@@ -92,6 +97,9 @@ func (h *HubConfig) validate() error {
 	}
 	if h.Heartbeat.Duration < 10*time.Second {
 		return errors.New("hub.heartbeat must be at least 10s")
+	}
+	if (h.CertFile == "") != (h.KeyFile == "") {
+		return errors.New("hub.cert_file and hub.key_file go together")
 	}
 	return nil
 }
@@ -163,7 +171,7 @@ func newHubAgent(r *Runner, cfg HubConfig, logDir string) *hubAgent {
 	host, _ := os.Hostname()
 	a := &hubAgent{
 		runner: r, dir: filepath.Join(logDir, hubOutboxDir), host: host, started: time.Now(),
-		client: &http.Client{Timeout: 20 * time.Second},
+		client: hubClient(cfg),
 		wake:   make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		cfg: cfg,
 	}
@@ -174,10 +182,28 @@ func newHubAgent(r *Runner, cfg HubConfig, logDir string) *hubAgent {
 	return a
 }
 
+// hubClient is the HTTP client for the hub, with its TLS settings.
+func hubClient(cfg HubConfig) *http.Client {
+	tc, err := clientTLS(cfg.CAFile, cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		log.Printf("hub: TLS: %v (sending without it will likely be refused)", err)
+	}
+	return httpClientTLS(20*time.Second, tc)
+}
+
 func (a *hubAgent) setConfig(cfg HubConfig) {
 	a.mu.Lock()
+	if cfg.CAFile != a.cfg.CAFile || cfg.CertFile != a.cfg.CertFile || cfg.KeyFile != a.cfg.KeyFile {
+		a.client = hubClient(cfg)
+	}
 	a.cfg = cfg
 	a.mu.Unlock()
+}
+
+func (a *hubAgent) httpClient() *http.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.client
 }
 
 func (a *hubAgent) config() HubConfig {
@@ -348,7 +374,7 @@ func (a *hubAgent) post(ctx context.Context, batch hubBatch) error {
 	req.Header.Set(hubAgentHeader, cfg.Agent)
 	req.Header.Set(hubTimestampHeader, ts)
 	req.Header.Set(hubSignatureHeader, signHub([]byte(cfg.token), ts, body))
-	resp, err := a.client.Do(req)
+	resp, err := a.httpClient().Do(req)
 	if err != nil {
 		var uerr *url.Error
 		if errors.As(err, &uerr) {

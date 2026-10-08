@@ -40,6 +40,15 @@ jobs:
             cp "dist/$name/nimdeploy" "dist/nimdeploy_linux_${arch}"
           done
           (cd dist && sha256sum ./*.tar.gz ./nimdeploy_linux_* > checksums.txt)
+      - name: Ansible collection
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          c=ansible/ansible_collections/aitorroma/nimdeploy
+          sed -i "s/^version: .*/version: $v/" "$c/galaxy.yml"
+          pipx install ansible-core
+          ansible-galaxy collection build "$c" --output-path dist
+          (cd dist && sha256sum "aitorroma-nimdeploy-$v.tar.gz" >> checksums.txt)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

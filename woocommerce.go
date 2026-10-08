@@ -144,6 +144,7 @@ func (s *Server) handleWooCommerce(d *DeployConfig) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid signature")
 			return
 		}
+		authenticated(r)
 		topic := r.Header.Get("X-WC-Webhook-Topic")
 		// Same delivery ID within a second is possible: add the body to tell them apart.
 		sum := sha256.Sum256(body)
@@ -182,7 +183,7 @@ func (s *Server) handleWooCommerce(d *DeployConfig) http.HandlerFunc {
 			return
 		}
 		t.Params = params
-		s.submit(w, d, t)
+		s.submit(w, r, d, t)
 	}
 }
 

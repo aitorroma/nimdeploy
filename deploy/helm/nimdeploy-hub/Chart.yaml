@@ -2,8 +2,8 @@ apiVersion: v2
 name: nimdeploy-hub
 description: Central console for nimdeploy agents (dashboard, API and metrics), with a libSQL server for its data.
 type: application
-version: 0.8.0
-appVersion: "v0.8.0"
+version: 0.9.0
+appVersion: "v0.9.0"
 home: https://nimdeploy.nimbox360.com
 sources:
   - https://github.com/aitorroma/nimdeploy
