@@ -368,6 +368,8 @@ func newTracer(cfg *Config, m *metrics) (*tracer, error) {
 	if o.Endpoint == "" {
 		return nil, nil
 	}
+	watchCertExpiry("otel_client", o.CertFile)
+	watchCertExpiry("otel_ca", o.CAFile)
 	tc, err := clientTLS(o.CAFile, o.CertFile, o.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("otel: %w", err)

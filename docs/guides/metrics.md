@@ -37,6 +37,10 @@ only to your monitoring network.
 | `nimdeploy_phase_duration_seconds{deploy,phase}` | summary | time in each phase: `command`, `health`, `ci`, `before`, `after_success`, `after_failure`, `cloudflare` |
 | `nimdeploy_ansible_hosts_total{deploy,result}` | counter | [Ansible](ansible.md) hosts by outcome: `ok`, `changed`, `unreachable`, `failed` |
 | `nimdeploy_ansible_last_run_hosts{deploy,result}` | gauge | the same for the last run |
+| `nimdeploy_runs_running` | gauge | runs in progress across every deploy |
+| `nimdeploy_runs_queued` | gauge | runs waiting across every deploy |
+| `nimdeploy_runs_oldest_queued_seconds` | gauge | how long the oldest waiting run has waited: the service is saturated when it grows |
+| `nimdeploy_tls_cert_expiry_timestamp_seconds{cert}` | gauge | expiry of each [certificate](tls.md) in use: `server`, `client_ca`, `hub_client`, `hub_ca`, `otel_client`, `otel_ca` (also on the hub) |
 | `nimdeploy_otel_dropped_total` | counter | spans and log records the [OTLP](observability.md) endpoint couldn't take |
 
 No label holds a per-run value (commit, delivery, run id): those are in the
@@ -87,6 +91,16 @@ groups:
         expr: histogram_quantile(0.9, rate(nimdeploy_queue_wait_seconds_bucket[1h])) > 600
         annotations:
           summary: "{{ $labels.deploy }}: runs wait over 10 minutes for their turn"
+
+      - alert: CertificateExpiresSoon
+        expr: nimdeploy_tls_cert_expiry_timestamp_seconds - time() < 14 * 86400
+        annotations:
+          summary: "{{ $labels.cert }} certificate expires in less than 14 days"
+
+      - alert: DeploysSaturated
+        expr: nimdeploy_runs_oldest_queued_seconds > 1800
+        annotations:
+          summary: "a run has been waiting over 30 minutes for its turn"
 
       - alert: NimdeployDown
         expr: up{job="nimdeploy"} == 0

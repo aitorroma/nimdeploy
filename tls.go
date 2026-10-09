@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -258,3 +259,69 @@ func (s *ServerConfig) validateTLS() error {
 }
 
 func (s *ServerConfig) tlsEnabled() bool { return s.TLSCertFile != "" }
+
+// --- certificate expiry, for alerts ----------------------------------------------------
+
+var certFiles = struct {
+	sync.Mutex
+	m map[string]string // role → PEM file
+}{m: map[string]string{}}
+
+// watchCertExpiry exposes a certificate file's expiry as
+// nimdeploy_tls_cert_expiry_timestamp_seconds{cert=role}. Empty paths are skipped.
+func watchCertExpiry(role, path string) {
+	if path == "" {
+		return
+	}
+	certFiles.Lock()
+	certFiles.m[role] = path
+	certFiles.Unlock()
+}
+
+// certExpiry is the earliest NotAfter of the certificates in a PEM file
+// (a chain or a CA bundle expires with its first certificate).
+func certExpiry(path string) (time.Time, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var first time.Time
+	for {
+		var block *pem.Block
+		block, data = pem.Decode(data)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		if first.IsZero() || c.NotAfter.Before(first) {
+			first = c.NotAfter
+		}
+	}
+	return first, !first.IsZero()
+}
+
+// writeCertExpiry adds the expiry metric to a /metrics page.
+func writeCertExpiry(b *strings.Builder) {
+	certFiles.Lock()
+	roles := sortedKeys(certFiles.m)
+	paths := make([]string, len(roles))
+	for i, r := range roles {
+		paths[i] = certFiles.m[r]
+	}
+	certFiles.Unlock()
+	if len(roles) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "# HELP nimdeploy_tls_cert_expiry_timestamp_seconds When a certificate in use expires (Unix time): server, client_ca, hub_client, hub_ca, otel_client, otel_ca.\n# TYPE nimdeploy_tls_cert_expiry_timestamp_seconds gauge\n")
+	for i, role := range roles {
+		if at, ok := certExpiry(paths[i]); ok {
+			fmt.Fprintf(b, "nimdeploy_tls_cert_expiry_timestamp_seconds{cert=%q} %d\n", role, at.Unix())
+		}
+	}
+}

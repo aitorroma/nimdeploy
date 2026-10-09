@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -268,4 +269,42 @@ func TestHubAgentCertificates(t *testing.T) {
 		t.Errorf("healthz without a certificate: %v", err)
 	}
 	_ = httptest.NewRecorder
+}
+
+func TestCertExpiryAndSaturationMetrics(t *testing.T) {
+	p := newTestPKI(t)
+	cert, _ := p.issue(t, "server", true)
+	watchCertExpiry("server", cert)
+	watchCertExpiry("client_ca", p.caFile)
+	t.Cleanup(func() {
+		certFiles.Lock()
+		certFiles.m = map[string]string{}
+		certFiles.Unlock()
+	})
+	at, ok := certExpiry(cert)
+	if !ok || time.Until(at) < 50*time.Minute || time.Until(at) > 70*time.Minute {
+		t.Fatalf("expiry %v %v", at, ok)
+	}
+
+	e := newEnv(t, `sleep 1`, "")
+	e.push(t, pushOpts{delivery: "m1"})
+	e.push(t, pushOpts{delivery: "m2", commit: sha2}) // waits behind m1
+	body := renderMetrics(e.cfg, e.runner)
+	for _, want := range []string{
+		"nimdeploy_runs_running 1\n",
+		"nimdeploy_runs_queued 1\n",
+		`nimdeploy_tls_cert_expiry_timestamp_seconds{cert="server"} ` + strconv.FormatInt(at.Unix(), 10),
+		`nimdeploy_tls_cert_expiry_timestamp_seconds{cert="client_ca"} `,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	if !strings.Contains(body, "nimdeploy_runs_oldest_queued_seconds 0.") && !strings.Contains(body, "nimdeploy_runs_oldest_queued_seconds 1.") {
+		t.Errorf("oldest queued:\n%s", body)
+	}
+	e.waitIdle(t)
+	if body := renderMetrics(e.cfg, e.runner); !strings.Contains(body, "nimdeploy_runs_queued 0\n") || !strings.Contains(body, "nimdeploy_runs_oldest_queued_seconds 0.000\n") {
+		t.Error("saturation after the queue drained")
+	}
 }

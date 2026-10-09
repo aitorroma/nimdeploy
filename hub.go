@@ -328,6 +328,8 @@ func hubServe(o *hubOptions) int {
 			return 1
 		}
 		ln = tls.NewListener(ln, tc)
+		watchCertExpiry("server", o.TLSCert)
+		watchCertExpiry("client_ca", o.TLSClientCA)
 		scheme = "https"
 		if o.TLSClientCA != "" {
 			scheme += ", agent certificates " + o.AgentCerts
@@ -1125,6 +1127,7 @@ func (h *hubServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "nimdeploy_hub_deploy_last_finished_timestamp_seconds%s %s\n", promLabels("agent", v.Agent, "deploy", v.Deploy), ts(*v.State.FinishedAt))
 		}
 	}
+	writeCertExpiry(&b)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = io.WriteString(w, b.String())
 }

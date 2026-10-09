@@ -105,5 +105,7 @@ openssl x509 -req -in web-1.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
   -days 365 -out web-1.pem -extfile <(printf "extendedKeyUsage=clientAuth\nsubjectAltName=DNS:web-1")
 ```
 
-Keep `ca.key` off the servers. Monitor expiry with the certificate files'
-dates or your usual tooling; nimdeploy picks up the renewed files on its own.
+Keep `ca.key` off the servers. nimdeploy picks up renewed files on its own,
+and `/metrics` shows when each certificate in use expires
+(`nimdeploy_tls_cert_expiry_timestamp_seconds{cert="server"}`, `client_ca`,
+`hub_client`...), for an alert [like this one](metrics.md#alerts).

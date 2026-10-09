@@ -185,6 +185,8 @@ func serve(configPath string, cfg *Config) {
 			log.Fatalf("tls: %v", err)
 		}
 		ln = tls.NewListener(ln, tc)
+		watchCertExpiry("server", s.TLSCertFile)
+		watchCertExpiry("client_ca", s.TLSClientCAFile)
 	}
 	if cfg.Server.apiToken == "" && !isLocal(cfg.Server) {
 		log.Printf("warning: listening on %s without server.api_token_env: /status is readable by anyone who can reach it", cfg.Server.Listen)

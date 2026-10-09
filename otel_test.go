@@ -115,6 +115,9 @@ logs = true
 	}
 	e.runner.tracer = tr
 	t.Cleanup(tr.Shutdown)
+	var serviceOut syncBuffer
+	log.SetOutput(&serviceOut)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	// An authenticated webhook continues the caller's trace.
 	const callerTrace, callerSpan = "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"
@@ -144,6 +147,10 @@ logs = true
 	}
 	if command.Parent != deploy.SpanID || before.Parent != deploy.SpanID || command.Attrs["process.exit.code"] != "0" {
 		t.Errorf("children: command %+v before %+v", command, before)
+	}
+	if out := serviceOut.String(); !strings.Contains(out, "trace_id="+callerTrace+" span_id="+deploy.SpanID) ||
+		!strings.Contains(out, "trace_id="+callerTrace+" span_id="+server.SpanID) {
+		t.Errorf("service log without the deploy's and the request's span ids:\n%s", out)
 	}
 	if out := readLatest(t, e, "svc"); !strings.Contains(out, "tp=00-"+callerTrace+"-"+command.SpanID+"-01") {
 		t.Errorf("TRACEPARENT for the command:\n%s", out)
@@ -263,4 +270,22 @@ func TestTraceparent(t *testing.T) {
 	if nilSpan.child("x", spanInternal) != nil || nilSpan.TraceID() != "" {
 		t.Error("nil span")
 	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the logger and the test to share.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

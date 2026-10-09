@@ -413,7 +413,7 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 	}
 	trace := ""
 	if id := sp.TraceID(); id != "" {
-		trace = " trace_id=" + id
+		trace = " trace_id=" + id + " span_id=" + sp.SpanID()
 		env = append(env, "TRACEPARENT="+sp.traceparent())
 	}
 	log.Printf("deploy=%s status=started trigger=%s delivery=%s commit=%s run=%s%s log=%s", d.Name, t.Source, t.Delivery, t.Commit, runID(path), trace, st.Log)
@@ -524,7 +524,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 
 	trace := ""
 	if id := sp.TraceID(); id != "" {
-		trace = " trace_id=" + id
+		trace = " trace_id=" + id + " span_id=" + sp.SpanID()
 	}
 	if errMsg != "" {
 		log.Printf("deploy=%s status=%s duration=%s run=%s%s error=%q log=%s", d.Name, status, duration, runID(path), trace, errMsg, path)

@@ -184,6 +184,8 @@ func newHubAgent(r *Runner, cfg HubConfig, logDir string) *hubAgent {
 
 // hubClient is the HTTP client for the hub, with its TLS settings.
 func hubClient(cfg HubConfig) *http.Client {
+	watchCertExpiry("hub_client", cfg.CertFile)
+	watchCertExpiry("hub_ca", cfg.CAFile)
 	tc, err := clientTLS(cfg.CAFile, cfg.CertFile, cfg.KeyFile)
 	if err != nil {
 		log.Printf("hub: TLS: %v (sending without it will likely be refused)", err)

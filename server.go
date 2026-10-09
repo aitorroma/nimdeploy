@@ -129,8 +129,8 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			return
 		}
 		trace := ""
-		if id := spanFrom(r.Context()).TraceID(); id != "" {
-			trace = " trace_id=" + id
+		if sp := spanFrom(r.Context()); sp.TraceID() != "" {
+			trace = " trace_id=" + sp.TraceID() + " span_id=" + sp.SpanID()
 		}
 		log.Printf("http %s %s status=%d client=%s delivery=%s duration=%s%s",
 			r.Method, r.URL.Path, rec.status, s.clientIP(r), deliveryID(r), formatDuration(time.Since(start)), trace)

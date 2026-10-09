@@ -28,7 +28,8 @@ Each line of the service log (journald, `docker logs`) becomes one object:
 - `level` is `error` for failures, `warn` for rejected or dropped requests,
   else `info`.
 - `run` is the deploy's log file without `.log`: it ties the service log, the
-  history and the hub together. `trace_id` ties them to the trace.
+  history and the hub together. `trace_id` and `span_id` (the deploy's or the
+  request's span) tie them to the trace.
 - The values of every configured secret (webhook secrets, tokens, the
   notification URL, OTLP headers) are replaced by `[REDACTED]`, in JSON and
   in text.

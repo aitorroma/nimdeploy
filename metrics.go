@@ -158,6 +158,25 @@ type deployGauges struct {
 	state           State
 }
 
+// saturation is the whole service's load: runs in progress, runs waiting
+// and how long the oldest one has waited.
+func (r *Runner) saturation() (running, queued int, oldest time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.running {
+		running += n
+	}
+	for _, q := range r.pending {
+		queued += len(q)
+		for _, p := range q {
+			if oldest.IsZero() || p.since.Before(oldest) {
+				oldest = p.since
+			}
+		}
+	}
+	return running, queued, oldest
+}
+
 func (r *Runner) gauges(names []string) map[string]deployGauges {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -343,6 +362,18 @@ func renderMetrics(cfg *Config, runner *Runner) string {
 			fmt.Fprintf(&b, "nimdeploy_ansible_last_run_hosts{deploy=%q,result=\"failed\"} %d\n", name, s.HostsFailed)
 		}
 	}
+	running, queued, oldest := runner.saturation()
+	family("nimdeploy_runs_running", "gauge", "Runs in progress across every deploy (lanes in use).")
+	fmt.Fprintf(&b, "nimdeploy_runs_running %d\n", running)
+	family("nimdeploy_runs_queued", "gauge", "Runs waiting for their turn across every deploy.")
+	fmt.Fprintf(&b, "nimdeploy_runs_queued %d\n", queued)
+	family("nimdeploy_runs_oldest_queued_seconds", "gauge", "How long the oldest waiting run has waited (0 when none waits).")
+	age := 0.0
+	if !oldest.IsZero() {
+		age = time.Since(oldest).Seconds()
+	}
+	fmt.Fprintf(&b, "nimdeploy_runs_oldest_queued_seconds %s\n", strconv.FormatFloat(age, 'f', 3, 64))
+	writeCertExpiry(&b)
 	if cfg.OTel.Endpoint != "" {
 		family("nimdeploy_otel_dropped_total", "counter", "Spans and log records dropped because the OTLP endpoint could not keep up.")
 		fmt.Fprintf(&b, "nimdeploy_otel_dropped_total %d\n", m.otelDropped)
