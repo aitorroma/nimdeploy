@@ -70,7 +70,7 @@
   // A filter box hides the items of its list that don't contain the text.
   function filterList(input) {
     var q = input.value.trim().toLowerCase();
-    var box = input.closest(".pick, .narrow");
+    var box = input.closest(".pick, .narrow, .agents-wrap");
     if (!box) return;
     box.querySelectorAll("[data-item]").forEach(function (el) {
       el.hidden = q !== "" && el.textContent.toLowerCase().indexOf(q) < 0;
@@ -95,6 +95,7 @@
     else if (ev.target.name === "kind" && ev.target.closest("#chForm")) syncKinds();
   });
   document.addEventListener("htmx:afterSwap", function (ev) {
+    document.querySelectorAll(".agents-wrap [data-filter]").forEach(function (i) { if (i.value) filterList(i); });
     if (ev.detail.target && ev.detail.target.id === "drawer") {
       openDrawer();
       syncKinds();

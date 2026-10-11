@@ -121,6 +121,7 @@ var hubTemplates = template.Must(template.New("hub").Funcs(template.FuncMap{
 	"lower":    strings.ToLower,
 	"wait":     func(lang, name string) string { return hubT(lang, "new.wait", name) },
 	"bg":       func(c string) template.CSS { return template.CSS("background:" + c) },
+	"initials": initialsOf,
 	"contains": strings.Contains,
 	"ver":      func() string { return url.QueryEscape(version) },
 	"dec":      func(n int) int { return n - 1 },
@@ -195,10 +196,10 @@ const hubHTML = `
       </div>{{else}}<div style="padding:8px 10px;color:var(--side-muted);font-size:13px">—</div>{{end}}
     </div>
     <div class="side-foot">
-      <span class="dot up"></span><span class="who">{{if eq .Who "token"}}admin{{else}}{{.Who}}{{end}}</span>
-      <span class="lang">{{range .Side.Langs}}<a href="{{.Href}}" hx-boost="false" class="{{if .On}}on{{end}}">{{.Code}}</a>{{end}}</span>
-      <button type="button" data-theme-toggle class="link">{{t .Lang "top.theme"}}</button>
-      {{if .Auth}}<form method="post" action="/logout" hx-boost="false"><button class="link">{{t .Lang "top.logout"}}</button></form>{{end}}
+      <div class="me"><span class="me-av">{{initials (or (and (eq .Who "token") "admin") .Who)}}</span><span class="who">{{if eq .Who "token"}}admin{{else}}{{.Who}}{{end}}</span>
+        {{if .Auth}}<form method="post" action="/logout" hx-boost="false"><button class="icon-btn" title="{{t .Lang "top.logout"}}" aria-label="{{t .Lang "top.logout"}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6"/><path d="M10.5 11 13.5 8l-3-3M13.5 8H6"/></svg></button></form>{{end}}</div>
+      <div class="prefs"><span class="seg" role="group" aria-label="Language">{{range .Side.Langs}}<a href="{{.Href}}" hx-boost="false" class="{{if .On}}on{{end}}"{{if .On}} aria-current="true"{{end}}>{{.Code}}</a>{{end}}</span>
+        <button type="button" data-theme-toggle class="icon-btn theme" title="{{t .Lang "top.theme"}}" aria-label="{{t .Lang "top.theme"}}"><svg class="i-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.6A5.6 5.6 0 0 1 6.4 2.5a5.6 5.6 0 1 0 7.1 7.1Z"/></svg><svg class="i-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.3M8 13.2v1.3M1.5 8h1.3M13.2 8h1.3M3.4 3.4l.9.9M11.7 11.7l.9.9M3.4 12.6l.9-.9M11.7 4.3l.9-.9"/></svg><span>{{t .Lang "top.theme"}}</span></button></div>
     </div>
   </aside>
   <div class="main">
@@ -314,8 +315,8 @@ const hubHTML = `
       <button class="btn small primary" type="button" hx-post="/ui{{.Href}}/{{.Action}}" hx-target="#actions" hx-swap="outerHTML">{{t .Lang "dp.confirm"}}</button>
       <button class="btn small" type="button" hx-get="/ui{{.Href}}/actions" hx-target="#actions" hx-swap="outerHTML">{{t .Lang "dp.cancel"}}</button></div>
   {{else if .CanCommand}}<div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" type="button" hx-get="/ui{{.Href}}/confirm/run" hx-target="#actions" hx-swap="outerHTML">{{t .Lang "dp.run_again"}}</button>
-      {{if .CanRollback}}<button class="btn" type="button" hx-get="/ui{{.Href}}/confirm/rollback" hx-target="#actions" hx-swap="outerHTML">{{t .Lang "dp.rollback"}}</button>{{end}}</div>{{end}}
+      <button class="btn" type="button" hx-get="/ui{{.Href}}/confirm/run" hx-target="#actions" hx-swap="outerHTML"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg>{{t .Lang "dp.run_again"}}</button>
+      {{if .CanRollback}}<button class="btn" type="button" hx-get="/ui{{.Href}}/confirm/rollback" hx-target="#actions" hx-swap="outerHTML"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3 2.5 6l3 3"/><path d="M2.5 6h7a4 4 0 0 1 0 8H6"/></svg>{{t .Lang "dp.rollback"}}</button>{{end}}</div>{{end}}
   {{if .NoCommands}}<div class="muted" style="font-size:12.5px">{{.NoCommands}}</div>{{end}}
   </div>
   {{if .Commands}}<ul class="cmds">{{range .Commands}}<li><span class="badge s-{{if eq .StatusCls "ok"}}success{{else if eq .StatusCls "bad"}}failed{{else if eq .StatusCls "run"}}running{{else}}queued{{end}}">{{.Status}}</span><b>{{.Action}}</b><span class="muted">{{.By}} · {{.Ago}}</span>{{if .Result}}<span class="muted">· {{.Result}}</span>{{end}}</li>{{end}}</ul>{{end}}
@@ -324,23 +325,27 @@ const hubHTML = `
 {{define "agents"}}{{$l := .Lang}}
 <div class="view-head"><div><h1>{{t $l "ag.title"}}</h1><p>{{t $l "ag.sub"}}</p></div>
   <div class="actions"><button class="btn primary" type="button" hx-get="/ui/agents/new" hx-target="#drawer">{{t $l "top.add_agent"}}</button></div></div>
-<div class="agents" id="agentcards" hx-get="{{$.Path}}" hx-select="#agentcards" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{range .Data.Cards}}
-  <section class="panel agent {{.State}}" id="agent-{{.Name}}">
-    <div class="top-row"><span class="avatar" style="{{bg .Color}}">{{.Initials}}</span><div><b>{{.Name}}</b><div class="muted" style="font-size:12px">{{.Where}}</div></div><span class="badge s-{{.State}}">{{.StateLabel}}</span></div>
-    {{if .Pending}}<div class="setup" style="margin:0">{{t $l "ag.pending_note"}}</div>{{else}}
-    <div><div class="label" style="margin-bottom:5px">{{t $l "ag.beats"}}</div><div class="beats">{{range .Beats}}<i class="{{if not .}}miss{{end}}"></i>{{end}}</div></div>
-    <dl><dt>{{t $l "ag.host"}}</dt><dd class="mono">{{.Host}}</dd><dt>{{t $l "ag.version"}}</dt><dd><span class="mono">{{.Version}}</span>{{if .Old}} <span class="badge s-queued">{{t $l "ag.update"}}</span>{{end}}</dd>
-    <dt>{{t $l "ag.last_seen"}}</dt><dd>{{.LastSeen}}</dd><dt>{{t $l "ag.up_since"}}</dt><dd>{{.UpSince}}</dd><dt>{{t $l "ag.waiting"}}</dt><dd>{{.Waiting}}</dd>
-    <dt>{{t $l "ag.cert"}}</dt><dd>{{.Cert}}</dd><dt>{{t $l "ag.commands"}}</dt><dd>{{.CommandsLabel}}</dd></dl>{{end}}
-    {{template "agent-foot" (foot $l .Name false)}}
-  </section>{{else}}<div class="setup" style="margin:0">{{t $l "ag.none"}}</div>{{end}}
-</div>{{end}}
+<div class="agents-wrap">{{if gt (len .Data.Cards) 6}}<input class="pick-filter ag-filter" type="search" placeholder="{{t $l "nf.filter"}}" data-filter autocomplete="off">{{end}}
+<div class="panel agents-list" id="agentcards" hx-get="{{$.Path}}" hx-select="#agentcards" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{if .Data.Cards}}<div class="scroll"><table class="agtable">
+  <thead><tr><th>{{t $l "ag.col_agent"}}</th><th>{{t $l "ag.col_state"}}</th><th title="{{t $l "ag.beats"}}">{{t $l "ag.col_beats"}}</th><th>{{t $l "ag.version"}}</th><th>{{t $l "ag.last_seen"}}</th><th>{{t $l "ag.cert"}}</th><th>{{t $l "ag.commands"}}</th><th><span class="sr-only">{{t $l "ag.col_actions"}}</span></th></tr></thead>
+  <tbody>{{range .Data.Cards}}<tr class="agrow {{.State}}" id="agent-{{.Name}}" data-item>
+    <th scope="row"><div class="agname"><span class="avatar" style="{{bg .Color}}">{{.Initials}}</span><div><b>{{.Name}}</b><div class="muted">{{.Where}}</div>{{if .Host}}<div class="mono aghost">{{.Host}}</div>{{end}}</div></div></th>
+    <td><span class="badge s-{{.State}}"{{if .UpSince}} title="{{t $l "ag.up_since"}} {{.UpSince}}"{{end}}>{{.StateLabel}}</span></td>
+    {{if .Pending}}<td colspan="5" class="muted agnote">{{t $l "ag.pending_note"}}</td>{{else}}
+    <td><div class="beats" title="{{t $l "ag.beats"}}">{{range .Beats}}<i class="{{if not .}}miss{{end}}"></i>{{end}}</div></td>
+    <td class="nowrap"><span class="mono">{{.Version}}</span>{{if .Old}} <span class="badge s-queued">{{t $l "ag.update"}}</span>{{end}}</td>
+    <td class="nowrap">{{.LastSeen}}{{if .Outbox}}<div class="muted small">{{.Waiting}}</div>{{end}}</td>
+    <td class="nowrap">{{.Cert}}</td>
+    <td class="nowrap">{{if .Commands}}<span class="on">{{.CommandsLabel}}</span>{{else}}<span class="muted">{{.CommandsLabel}}</span>{{end}}</td>{{end}}
+    <td class="agactions">{{template "agent-foot" (foot $l .Name false)}}</td>
+  </tr>{{end}}</tbody></table></div>{{else}}<div class="setup" style="margin:0">{{t $l "ag.none"}}</div>{{end}}
+</div></div>{{end}}
 
 {{define "agent-foot"}}<div class="foot" id="foot-{{.Name}}">{{if .Confirm}}<span class="muted" style="font-size:12.5px;align-self:center">{{if eq .Lang "es"}}¿Revocar {{.Name}}? Sus eventos se rechazarán.{{else}}Revoke {{.Name}}? Its events will be refused.{{end}}</span>
   <button class="btn small danger" type="button" hx-post="/ui/agents/{{.Name}}/revoke">{{t .Lang "ag.confirm_revoke"}}</button>
   <button class="btn small" type="button" hx-get="/ui/agents/{{.Name}}/foot" hx-target="#foot-{{.Name}}" hx-swap="outerHTML">{{t .Lang "dp.cancel"}}</button>
-{{else}}<button class="btn small" type="button" hx-get="/ui/agents/{{.Name}}/renew" hx-target="#drawer">{{t .Lang "ag.new_token"}}</button>
-  <button class="btn small danger" type="button" hx-get="/ui/agents/{{.Name}}/foot?confirm=1" hx-target="#foot-{{.Name}}" hx-swap="outerHTML">{{t .Lang "ag.revoke"}}</button>{{end}}</div>{{end}}
+{{else}}<button class="btn small icon" type="button" hx-get="/ui/agents/{{.Name}}/renew" hx-target="#drawer" title="{{t .Lang "ag.new_token"}}" aria-label="{{t .Lang "ag.new_token"}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="11" r="2.8"/><path d="M7 9l6.5-6.5M11 4.5l1.8 1.8M9.6 5.9l1.4 1.4"/></svg></button>
+  <button class="btn small icon danger" type="button" hx-get="/ui/agents/{{.Name}}/foot?confirm=1" hx-target="#foot-{{.Name}}" hx-swap="outerHTML" title="{{t .Lang "ag.revoke"}}" aria-label="{{t .Lang "ag.revoke"}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M3.9 12.1l8.2-8.2"/></svg></button>{{end}}</div>{{end}}
 
 {{define "activity"}}{{$l := .Lang}}<div class="view-head"><div><h1>{{t $l "act.title"}}</h1><p>{{t $l "act.sub"}}</p></div></div>
 <section class="panel" id="actpanel" hx-get="{{$.Path}}" hx-select="#actpanel" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{template "timeline" .Data.Timeline}}</section>{{end}}

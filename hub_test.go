@@ -104,7 +104,7 @@ heartbeat = "10s"
 	if code != 200 || !strings.Contains(body, "step 2") || !strings.Contains(body, "<h1>agency <span class=\"badge s-failed\">failed</span></h1>") {
 		t.Errorf("detail %d:\n%s", code, body)
 	}
-	if code, body := hubGet(t, srv, "/agents", testHubToken); code != 200 || !strings.Contains(body, `class="badge s-online">online`) {
+	if code, body := hubGet(t, srv, "/agents", testHubToken); code != 200 || !strings.Contains(body, `class="badge s-online"`) {
 		t.Errorf("agents page %d:\n%s", code, body)
 	}
 	if code, _ := hubGet(t, srv, "/?client=Nobody", testHubToken); code != 200 {

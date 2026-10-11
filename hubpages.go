@@ -921,6 +921,7 @@ type agentCard struct {
 	Name, Where, Color, Initials, State, StateLabel string
 	Host, Version, LastSeen, UpSince, Waiting, Cert string
 	Old, Pending, Commands                          bool
+	Outbox                                          bool
 	Beats                                           []bool
 	CommandsLabel                                   string
 }
@@ -956,6 +957,7 @@ func (h *hubServer) agentCards(ctx context.Context, lang string, agents []hubAge
 		c.Waiting = hubT(lang, "ag.nothing")
 		if a.Outbox > 0 {
 			c.Waiting = hubT(lang, "ag.events_to_send", a.Outbox)
+			c.Outbox = true
 		}
 		c.Cert = hubT(lang, "ag.no_cert")
 		if a.RequireCert {
