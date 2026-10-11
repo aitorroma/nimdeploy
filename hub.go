@@ -63,6 +63,8 @@ type hubOptions struct {
 	AgentCerts string
 	// AgentCADir holds the hub's own CA for agent certificates (created when empty).
 	AgentCADir string
+	// PublicURL is the hub's address as people reach it, for links in notifications.
+	PublicURL string
 }
 
 func envOr(name, def string) string {
@@ -89,6 +91,7 @@ func hubFlags(fs *flag.FlagSet, serve bool) *hubOptions {
 		fs.StringVar(&o.TLSKey, "tls-key", os.Getenv("NIMDEPLOY_HUB_TLS_KEY"), "its private key ($NIMDEPLOY_HUB_TLS_KEY)")
 		fs.StringVar(&o.TLSClientCA, "tls-client-ca", os.Getenv("NIMDEPLOY_HUB_TLS_CLIENT_CA"), "CA of the agents' client certificates ($NIMDEPLOY_HUB_TLS_CLIENT_CA)")
 		fs.StringVar(&o.AgentCADir, "agent-ca-dir", os.Getenv("NIMDEPLOY_HUB_AGENT_CA_DIR"), "directory with the hub's CA for agent certificates, created when empty; needs -tls-cert ($NIMDEPLOY_HUB_AGENT_CA_DIR)")
+		fs.StringVar(&o.PublicURL, "public-url", os.Getenv("NIMDEPLOY_HUB_PUBLIC_URL"), "the hub's URL, e.g. https://hub.example.com, for links in notifications ($NIMDEPLOY_HUB_PUBLIC_URL)")
 		fs.StringVar(&o.AgentCerts, "agent-certs", envOr("NIMDEPLOY_HUB_AGENT_CERTS", "optional"), "with -tls-client-ca: require a certificate named like the agent (require), or check it only when sent (optional) ($NIMDEPLOY_HUB_AGENT_CERTS)")
 	}
 	return o
@@ -298,7 +301,7 @@ func hubServe(o *hubOptions) int {
 		log.Printf("hub: %v", err)
 		return 1
 	}
-	h := &hubServer{store: store, opts: o, started: time.Now()}
+	h := &hubServer{store: store, opts: o, started: time.Now(), notifier: newHubNotifier(store, o.PublicURL)}
 	if o.AgentCADir != "" {
 		if o.TLSCert == "" {
 			log.Printf("hub: -agent-ca-dir needs -tls-cert: the hub must terminate TLS to see the agents' certificates")
@@ -325,6 +328,8 @@ func hubServe(o *hubOptions) int {
 			}
 		}
 	}()
+
+	go h.watchAgents(ctx)
 
 	srv := &http.Server{Addr: o.Listen, Handler: h.routes(), ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: time.Minute, WriteTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
@@ -399,7 +404,9 @@ type hubServer struct {
 	opts    *hubOptions
 	started time.Time
 	ca      *hubCA // agent certificates; nil without -agent-ca-dir
-	waiters commandWaiters
+	// notifier sends notifications by the rules set in the dashboard; nil sends nothing.
+	notifier *hubNotifier
+	waiters  commandWaiters
 }
 
 func (h *hubServer) routes() http.Handler {
@@ -437,6 +444,17 @@ func (h *hubServer) routes() http.Handler {
 	mux.HandleFunc("POST /ui/agents/{name}/renew", h.changes(h.uiRenew))
 	mux.HandleFunc("GET /ui/agents/{name}/foot", h.ui(h.uiAgentFoot))
 	mux.HandleFunc("POST /ui/agents/{name}/revoke", h.changes(h.uiRevoke))
+	mux.HandleFunc("GET /notifications", h.ui(h.pageNotifications))
+	mux.HandleFunc("GET /ui/notify/rules/new", h.ui(h.uiRuleForm))
+	mux.HandleFunc("GET /ui/notify/rules/{id}", h.ui(h.uiRuleForm))
+	mux.HandleFunc("POST /ui/notify/rules", h.changes(h.uiSaveRule))
+	mux.HandleFunc("POST /ui/notify/rules/{id}/toggle", h.changes(h.uiToggleRule))
+	mux.HandleFunc("POST /ui/notify/rules/{id}/delete", h.changes(h.uiDeleteRule))
+	mux.HandleFunc("GET /ui/notify/channels/new", h.ui(h.uiChannelForm))
+	mux.HandleFunc("GET /ui/notify/channels/{id}", h.ui(h.uiChannelForm))
+	mux.HandleFunc("POST /ui/notify/channels", h.changes(h.uiSaveChannel))
+	mux.HandleFunc("POST /ui/notify/channels/{id}/delete", h.changes(h.uiDeleteChannel))
+	mux.HandleFunc("POST /ui/notify/channels/{id}/test", h.changes(h.uiTestChannel))
 	mux.HandleFunc("GET /ui/d/{agent}/{deploy}/actions", h.ui(h.uiActions))
 	mux.HandleFunc("GET /ui/d/{agent}/{deploy}/confirm/{action}", h.ui(h.uiConfirm))
 	mux.HandleFunc("POST /ui/d/{agent}/{deploy}/{action}", h.changes(h.uiCommand))
@@ -501,11 +519,13 @@ func (h *hubServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 			events = append(events, ev)
 		}
 	}
+	notices := h.noticesFor(r.Context(), a, events)
 	if err := h.store.ingest(r.Context(), agent, events); err != nil {
 		log.Printf("hub: storing events from %s: %v", agent, err)
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
+	h.notifier.dispatch(notices)
 	writeJSON(w, http.StatusOK, map[string]int{"accepted": len(events)})
 }
 

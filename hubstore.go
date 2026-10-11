@@ -15,7 +15,7 @@ import (
 // hubStore keeps the hub's data in libSQL: agents (with their tokens), every
 // event they sent, and the current state of each deploy for the dashboard.
 
-const hubSchemaVersion = 2
+const hubSchemaVersion = 3
 
 var hubSchema = []string{
 	`CREATE TABLE IF NOT EXISTS hub_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -97,6 +97,31 @@ var hubMigrations = [][]string{
 			updated_at  TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS commands_agent ON commands (agent, status, created_at)`,
+	},
+	{
+		`CREATE TABLE IF NOT EXISTS notify_channels (
+			id         TEXT PRIMARY KEY,
+			name       TEXT NOT NULL,
+			kind       TEXT NOT NULL,
+			config     TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			last_at    TEXT,
+			last_error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS notify_rules (
+			id         TEXT PRIMARY KEY,
+			name       TEXT NOT NULL,
+			lang       TEXT,
+			enabled    INTEGER NOT NULL DEFAULT 1,
+			events     TEXT NOT NULL,
+			clients    TEXT,
+			envs       TEXT,
+			agents     TEXT,
+			deploys    TEXT,
+			channels   TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS notify_state (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT NOT NULL)`,
 	},
 }
 

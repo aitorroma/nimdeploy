@@ -13,6 +13,9 @@ hub:
   # Cf-Access-Authenticated-User-Email). Only if nothing else can reach the hub.
   trustedHeader: ""
   retainDays: 90
+  # The hub's URL for links in notifications. Empty: https://<ingressRouteTCP.host
+  # or ingress.host>, when one is enabled.
+  publicURL: ""
   logFormat: text      # or json
   # Native TLS (the hub terminates HTTPS) and agent client certificates.
   # For mTLS expose the hub with service.type LoadBalancer or an Ingress with

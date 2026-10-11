@@ -38,6 +38,13 @@ spec:
               value: {{ .Values.hub.retainDays | quote }}
             - name: NIMDEPLOY_HUB_LOG_FORMAT
               value: {{ .Values.hub.logFormat | quote }}
+            {{- $public := .Values.hub.publicURL }}
+            {{- if and (not $public) .Values.ingressRouteTCP.enabled }}{{ $public = printf "https://%s" .Values.ingressRouteTCP.host }}{{ end }}
+            {{- if and (not $public) .Values.ingress.enabled }}{{ $public = printf "https://%s" .Values.ingress.host }}{{ end }}
+            {{- with $public }}
+            - name: NIMDEPLOY_HUB_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
             {{- if include "hub.tlsSecret" . }}
             - name: NIMDEPLOY_HUB_TLS_CERT
               value: /tls/server/tls.crt

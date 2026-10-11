@@ -1,5 +1,9 @@
 # Notifications and commit statuses
 
+These are sent by each server. With a [central hub](hub.md), you can instead
+set notifications for every server in one place, with rules per client,
+environment and server: see [hub notifications](hub.md#notifications).
+
 ## Chat notifications
 
 ```toml

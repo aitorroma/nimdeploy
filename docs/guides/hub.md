@@ -98,6 +98,7 @@ a NetworkPolicy). Main values:
 | `hub.token` / `hub.existingSecret` | generated | dashboard and API token (Secret key `token`) |
 | `hub.trustedHeader` | – | header from an authenticating proxy |
 | `hub.retainDays` | `90` | events older than this are deleted (the current state stays) |
+| `hub.publicURL` | from the host | the hub's URL for links in notifications |
 | `sqld.enabled` | `true` | `false` with `externalDatabase.url` (and `token`) for Turso |
 | `sqld.persistence.size` | `2Gi` | |
 | `ingress.*` | disabled | |
@@ -185,6 +186,48 @@ Pages refresh on their own every 20 seconds. The dashboard is in English and
 Spanish: it follows the browser's language, and the switch at the bottom of
 the sidebar remembers your choice. Light and dark themes follow the system.
 
+## Notifications
+
+**Notifications** in the sidebar sends what happens to Slack, Discord,
+Telegram, any URL (JSON) or email. It has two parts:
+
+- **Destinations**: where messages go. A Slack or Discord incoming webhook,
+  a Telegram bot and chat, a URL that takes a JSON `POST`, or an SMTP server
+  and its recipients. **Send test** checks one right away, and each shows
+  how its last delivery went.
+- **Rules**: which events go to which destinations. A rule picks events, and
+  can be limited to some clients, environments, servers and deploys (ticking
+  nothing in a group includes all of it). It sends to one or more
+  destinations, in English or Spanish, and can be paused.
+
+| Event | When |
+|---|---|
+| Deploy failed | a run fails; the message carries the end of its log |
+| Deploy recovered | the first success after a failure |
+| Deploy succeeded | every successful run |
+| Request rejected | a webhook was refused (bad signature, wrong repository…) |
+| Server offline / back online | an agent misses three heartbeats, and when it returns |
+| Certificate expiring | an agent's certificate expires within 30 days |
+| Command refused | the agent refused a run or rollback from the hub |
+
+For example, one rule for every production failure to the on-call Telegram
+chat, and another for everything about one client to that client's Slack
+channel. A destination gets each event once, even when several rules match.
+
+Each message says what happened, where (client, environment, server), the
+commit and who pushed it, the error, and links to the deploy in the hub when
+the hub knows its address: set `-public-url` (`NIMDEPLOY_HUB_PUBLIC_URL`).
+The Helm chart sets it from `ingressRouteTCP.host` or `ingress.host`.
+
+- An event the agent resends from its outbox isn't notified twice.
+- Failed deliveries are retried twice (after 5 and 30 seconds), then shown
+  on the destination.
+- URLs, tokens and passwords are kept in the hub's database and never shown
+  again: editing a destination leaves them empty, and empty keeps them.
+- These are the hub's notifications. Each server can still send its own
+  with [`[notify]`](notifications.md); use one or the other for the same
+  channel, or you'll get both.
+
 ## Agent certificates
 
 With `-agent-ca-dir` the hub keeps its own small CA and issues a client
@@ -269,7 +312,7 @@ browser session or the proxy header.
 
 ```text
 nimdeploy hub serve [-listen ADDR] [-database URL] [-trusted-header H] [-retain-days N]
-                    [-tls-cert F -tls-key F] [-tls-client-ca F] [-agent-ca-dir DIR] [-no-auth]
+                    [-tls-cert F -tls-key F] [-tls-client-ca F] [-agent-ca-dir DIR] [-public-url URL] [-no-auth]
 nimdeploy hub agent add|list|revoke [name]
 nimdeploy hub healthcheck
 ```
@@ -287,6 +330,7 @@ nimdeploy hub healthcheck
 | `NIMDEPLOY_HUB_TLS_CLIENT_CA` | CA of the agents' certificates |
 | `NIMDEPLOY_HUB_AGENT_CERTS` | `optional` (default) or `require`: each agent's certificate must carry its name |
 | `NIMDEPLOY_HUB_AGENT_CA_DIR` | the hub's CA for [agent certificates](#agent-certificates) |
+| `NIMDEPLOY_HUB_PUBLIC_URL` | the hub's URL, for links in [notifications](#notifications) |
 
 Without a token or a trusted header, the hub only starts on a loopback
 address (or with `-no-auth`).

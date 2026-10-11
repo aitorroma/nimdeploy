@@ -64,6 +64,7 @@ jobs:
           helm template hub deploy/helm/nimdeploy-hub > /dev/null
           helm template hub deploy/helm/nimdeploy-hub --set sqld.enabled=false,externalDatabase.url=libsql://x.turso.io,externalDatabase.token=t,ingress.enabled=true > /dev/null
           helm template hub deploy/helm/nimdeploy-hub --set hub.tls.certificate.enabled=true,hub.agentCA.enabled=true,ingressRouteTCP.enabled=true,ingressRouteTCP.host=hub.example.com > /dev/null
+          helm template hub deploy/helm/nimdeploy-hub --set hub.publicURL=https://hub.example.com > /dev/null
       - name: Docker image
         run: docker build --build-arg VERSION=ci -t nimdeploy:ci . && docker run --rm nimdeploy:ci -version
       - name: Compose file

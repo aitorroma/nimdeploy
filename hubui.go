@@ -121,7 +121,10 @@ var hubTemplates = template.Must(template.New("hub").Funcs(template.FuncMap{
 	"wait":     func(lang, name string) string { return hubT(lang, "new.wait", name) },
 	"bg":       func(c string) template.CSS { return template.CSS("background:" + c) },
 	"contains": strings.Contains,
-	"errLine":  errLine,
+	"group": func(lang, title, name string, opts []opt) map[string]any {
+		return map[string]any{"Lang": lang, "Title": title, "Name": name, "Opts": opts}
+	},
+	"errLine": errLine,
 	"foot": func(lang, name string, confirm bool) map[string]any {
 		return map[string]any{"Lang": lang, "Name": name, "Confirm": confirm}
 	},
@@ -179,6 +182,7 @@ const hubHTML = `
       <a href="/activity" class="{{if eq .Page "activity"}}on{{end}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 8h3l2-5 4 10 2-5h3"/></svg><span>{{t .Lang "nav.activity"}}</span><span class="count">24h</span></a>
       <a href="/attention" class="{{if eq .Page "attention"}}on{{end}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5v4M8 11v.5"/></svg><span>{{t .Lang "nav.attention"}}</span>{{if .Side.AttnCount}}<span class="count bad">{{.Side.AttnCount}}</span>{{end}}</a>
       <a href="/agents" class="{{if eq .Page "agents"}}on{{end}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="2.5" width="13" height="4" rx="1"/><rect x="1.5" y="9.5" width="13" height="4" rx="1"/><path d="M4 4.5h.5M4 11.5h.5"/></svg><span>{{t .Lang "nav.agents"}}</span><span class="count">{{.Side.AgentCount}}</span></a>
+      <a href="/notifications" class="{{if eq .Page "notifications"}}on{{end}}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11z"/><path d="M6.5 14h3"/></svg><span>{{t .Lang "nav.notify"}}</span></a>
     </nav>
     <div class="side-section"><span class="label">{{t .Lang "side.clients"}}</span><span class="hint">{{t .Lang "side.from_label"}}</span></div>
     <div class="tree" id="tree">
@@ -208,7 +212,8 @@ const hubHTML = `
       {{else if eq .Page "deploy"}}{{template "deploy" .}}
       {{else if eq .Page "agents"}}{{template "agents" .}}
       {{else if eq .Page "activity"}}{{template "activity" .}}
-      {{else if eq .Page "attention"}}{{template "attention" .}}{{end}}
+      {{else if eq .Page "attention"}}{{template "attention" .}}
+      {{else if eq .Page "notifications"}}{{template "notifications" .}}{{end}}
     </main>
   </div>
 </div>
@@ -382,6 +387,75 @@ systemctl --user restart nimdeploy</pre><button class="btn small" type="button" 
 
 {{define "drawer-wait"}}{{if .Connected}}<div class="waiting done" id="wait"><span class="check">✓</span><span><b>{{.Connected}}</b> <a href="{{.OpenHref}}">{{.OpenLabel}}</a></span></div>
 {{template "steps" (stepsOOB .Lang 3)}}{{else}}<div class="waiting" id="wait" hx-get="{{.WaitHref}}" hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"><span class="spinner"></span><span>{{wait .Lang .Name}}</span></div>{{end}}{{end}}
+
+{{define "notifications"}}{{$l := .Lang}}
+<div class="view-head"><div><h1>{{t $l "nf.title"}}</h1><p>{{t $l "nf.sub"}}</p></div>
+  <div class="actions"><button class="btn" type="button" hx-get="/ui/notify/channels/new" hx-target="#drawer">{{t $l "nf.new_channel"}}</button><button class="btn primary" type="button" hx-get="/ui/notify/rules/new" hx-target="#drawer">{{t $l "nf.new_rule"}}</button></div></div>
+{{if .Data.NoLinks}}<div class="note" style="margin-bottom:16px">{{t $l "nf.no_public_url"}}</div>{{end}}
+<div class="stack">
+<section class="panel"><div class="panel-head"><h2>{{t $l "nf.rules"}}</h2><span class="sub">{{t $l "nf.rules_sub"}}</span></div>
+  {{if .Data.Rules}}<ul class="nlist">{{range .Data.Rules}}<li class="{{if not .Enabled}}off{{end}}">
+    <div class="nmain"><div class="ntitle"><b>{{.Name}}</b><span class="badge s-{{if .Enabled}}success{{else}}never{{end}}">{{if .Enabled}}{{t $l "nf.on"}}{{else}}{{t $l "nf.off"}}{{end}}</span><span class="muted mono">{{.Lang}}</span></div>
+    <div class="chips">{{range .Events}}<span class="chip">{{.}}</span>{{end}}</div>
+    <div class="nmeta muted">{{range $i, $f := .Filters}}{{if $i}} · {{end}}{{$f}}{{end}}</div>
+    <div class="nmeta">→ {{if .Channels}}{{range $i, $c := .Channels}}{{if $i}}, {{end}}{{$c}}{{end}}{{else}}<span class="error">{{t $l "nf.no_dests"}}</span>{{end}}</div></div>
+    <div class="nactions"><button class="btn small" type="button" hx-get="/ui/notify/rules/{{.ID}}" hx-target="#drawer">{{t $l "nf.edit"}}</button>
+      <button class="btn small" type="button" hx-post="/ui/notify/rules/{{.ID}}/toggle" hx-vals='{"on": "{{if .Enabled}}0{{else}}1{{end}}"}'>{{if .Enabled}}{{t $l "nf.pause"}}{{else}}{{t $l "nf.resume"}}{{end}}</button>
+      <button class="btn small danger" type="button" hx-post="/ui/notify/rules/{{.ID}}/delete" hx-confirm="{{tf $l "nf.confirm_rule" .Name}}">{{t $l "nf.delete"}}</button></div>
+  </li>{{end}}</ul>{{else}}<div class="setup" style="margin:16px">{{t $l "nf.no_rules"}}</div>{{end}}
+</section>
+<section class="panel"><div class="panel-head"><h2>{{t $l "nf.channels"}}</h2><span class="sub">{{t $l "nf.channels_sub"}}</span></div>
+  {{if .Data.Channels}}<ul class="nlist">{{range .Data.Channels}}<li>
+    <div class="nmain"><div class="ntitle"><b>{{.Name}}</b><span class="chip">{{.KindLabel}}</span></div>
+    <div class="nmeta mono muted">{{.Target}}</div>
+    <div class="nmeta"><span class="badge s-{{.LastCls}}">{{.Last}}</span> <span id="test-{{.ID}}"></span></div></div>
+    <div class="nactions"><button class="btn small" type="button" hx-post="/ui/notify/channels/{{.ID}}/test" hx-target="#test-{{.ID}}">{{t $l "nf.test"}}</button>
+      <button class="btn small" type="button" hx-get="/ui/notify/channels/{{.ID}}" hx-target="#drawer">{{t $l "nf.edit"}}</button>
+      <button class="btn small danger" type="button" hx-post="/ui/notify/channels/{{.ID}}/delete" hx-confirm="{{tf $l "nf.confirm_channel" .Name}}">{{t $l "nf.delete"}}</button></div>
+  </li>{{end}}</ul>{{else}}<div class="setup" style="margin:16px">{{t $l "nf.no_channels"}}</div>{{end}}
+</section>
+</div>{{end}}
+
+{{define "checkgroup"}}<fieldset class="checks"><legend>{{t .Lang .Title}}</legend>{{range .Opts}}<label><input type="checkbox" name="{{$.Name}}" value="{{.Value}}" {{if .On}}checked{{end}}><span>{{.Label}}</span></label>{{else}}<span class="hint">—</span>{{end}}</fieldset>{{end}}
+
+{{define "drawer-rule"}}{{$l := .Lang}}<div class="drawer-head" data-keep><h2>{{if .ID}}{{t $l "nf.rule_edit"}}{{else}}{{t $l "nf.rule_new"}}{{end}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
+<form class="drawer-body" id="ruleForm" hx-post="/ui/notify/rules" hx-target="#drawer" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
+  <input type="hidden" name="id" value="{{.ID}}">
+  {{if .Error}}<div class="note" style="background:var(--bad-soft)">{{.Error}}</div>{{end}}
+  <div class="field"><label for="ru-name">{{t $l "nf.name"}}</label><input id="ru-name" name="name" value="{{.Name}}" maxlength="100" placeholder="{{t $l "nf.name_ph"}}"></div>
+  {{template "checkgroup" (group $l "nf.events" "event" .Events)}}
+  <div class="field"><span class="lab">{{t $l "nf.filters"}}</span><span class="hint">{{t $l "nf.filters_hint"}}</span></div>
+  {{template "checkgroup" (group $l "nf.f_clients" "client" .Clients)}}
+  {{template "checkgroup" (group $l "nf.f_envs" "env" .Envs)}}
+  {{template "checkgroup" (group $l "nf.f_agents" "agent" .Agents)}}
+  {{template "checkgroup" (group $l "nf.f_deploys" "deploy" .Deploys)}}
+  {{if .Channels}}{{template "checkgroup" (group $l "nf.dests" "channel" .Channels)}}{{else}}<div class="note">{{t $l "nf.dests_none"}}</div>{{end}}
+  <div class="row2"><div class="field"><label for="ru-lang">{{t $l "nf.lang"}}</label><select id="ru-lang" name="lang"><option value="en" {{if eq .RuleLang "en"}}selected{{end}}>English</option><option value="es" {{if eq .RuleLang "es"}}selected{{end}}>Español</option></select></div>
+  <label class="toggle" for="ru-on"><span class="tt">{{t $l "nf.enabled"}}</span><input type="checkbox" id="ru-on" name="enabled" {{if .Enabled}}checked{{end}}><span class="sw"></span></label></div>
+</form>
+<div class="drawer-foot"><button class="btn" type="button" data-close>{{t $l "new.cancel"}}</button><button class="btn primary" type="submit" form="ruleForm">{{t $l "nf.save"}}</button></div>{{end}}
+
+{{define "drawer-channel"}}{{$l := .Lang}}<div class="drawer-head" data-keep><h2>{{if .ID}}{{t $l "nf.ch_edit"}}{{else}}{{t $l "nf.ch_new"}}{{end}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
+<form class="drawer-body" id="chForm" hx-post="/ui/notify/channels" hx-target="#drawer" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}' autocomplete="off">
+  <input type="hidden" name="id" value="{{.ID}}">
+  {{if .Error}}<div class="note" style="background:var(--bad-soft)">{{.Error}}</div>{{end}}
+  <div class="row2"><div class="field"><label for="ch-name">{{t $l "nf.name"}}</label><input id="ch-name" name="name" value="{{.Name}}" maxlength="100" placeholder="{{t $l "nf.ch_name_ph"}}"></div>
+  <div class="field"><label for="ch-kind">{{t $l "nf.kind"}}</label><select id="ch-kind" name="kind">{{range .Kinds}}<option value="{{.Value}}" {{if .On}}selected{{end}}>{{.Label}}</option>{{end}}</select></div></div>
+  <div class="field" data-kinds="slack discord webhook"><label for="ch-url">URL</label><input id="ch-url" name="url" type="url" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{else}}https://hooks.slack.com/services/…{{end}}"><span class="hint">{{t $l "nf.url_hint"}}</span></div>
+  <div class="row2" data-kinds="telegram"><div class="field"><label for="ch-bot">{{t $l "nf.bot_token"}}</label><input id="ch-bot" name="bot_token" type="password" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{else}}123456:ABC…{{end}}"></div>
+  <div class="field"><label for="ch-chat">{{t $l "nf.chat_id"}}</label><input id="ch-chat" name="chat_id" value="{{.Config.ChatID}}" placeholder="-1001234567890"></div></div>
+  <div class="row2" data-kinds="email"><div class="field"><label for="ch-host">{{t $l "nf.smtp_host"}}</label><input id="ch-host" name="smtp_host" value="{{.Config.SMTPHost}}" placeholder="smtp.example.com"></div>
+  <div class="field"><label for="ch-port">{{t $l "nf.smtp_port"}}</label><input id="ch-port" name="smtp_port" inputmode="numeric" value="{{if .Config.SMTPPort}}{{.Config.SMTPPort}}{{end}}" placeholder="587"></div></div>
+  <div class="row2" data-kinds="email"><div class="field"><label for="ch-tls">{{t $l "nf.smtp_tls"}}</label><select id="ch-tls" name="smtp_tls"><option value="starttls" {{if eq .Config.SMTPTLS "starttls"}}selected{{end}}>STARTTLS (587)</option><option value="tls" {{if eq .Config.SMTPTLS "tls"}}selected{{end}}>TLS (465)</option><option value="none" {{if eq .Config.SMTPTLS "none"}}selected{{end}}>{{t $l "nf.smtp_none"}}</option></select></div>
+  <div class="field"><label for="ch-user">{{t $l "nf.smtp_user"}}</label><input id="ch-user" name="smtp_user" value="{{.Config.SMTPUser}}"></div></div>
+  <div class="row2" data-kinds="email"><div class="field"><label for="ch-pass">{{t $l "nf.smtp_pass"}}</label><input id="ch-pass" name="smtp_password" type="password" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{end}}"></div>
+  <div class="field"><label for="ch-from">{{t $l "nf.from"}}</label><input id="ch-from" name="from" value="{{.Config.From}}" placeholder="nimdeploy &lt;deploy@example.com&gt;"></div></div>
+  <div class="field" data-kinds="email"><label for="ch-to">{{t $l "nf.to"}}</label><input id="ch-to" name="to" value="{{.To}}" placeholder="ops@example.com, dev@example.com"></div>
+  <p class="hint muted" style="margin:0">{{t $l "nf.secrets_note"}}</p>
+</form>
+<div class="drawer-foot"><button class="btn" type="button" data-close>{{t $l "new.cancel"}}</button><button class="btn primary" type="submit" form="chForm">{{t $l "nf.save"}}</button></div>{{end}}
+
+{{define "chan-test"}}<span class="test-result {{if .OK}}ok{{else}}bad{{end}}">{{.Text}}</span>{{end}}
 
 {{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nimdeploy hub</title><link rel="stylesheet" href="/static/hub.css"><link rel="icon" href="/static/mark.svg" type="image/svg+xml"></head>
 <body><form class="login" method="post" action="/login">

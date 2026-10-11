@@ -31,6 +31,8 @@ services:
       NIMDEPLOY_HUB_TRUSTED_HEADER: ${NIMDEPLOY_HUB_TRUSTED_HEADER:-}
       NIMDEPLOY_HUB_RETAIN_DAYS: ${NIMDEPLOY_HUB_RETAIN_DAYS:-90}
       NIMDEPLOY_HUB_LOG_FORMAT: ${NIMDEPLOY_HUB_LOG_FORMAT:-text}
+      # The hub's URL as people open it, for links in notifications.
+      NIMDEPLOY_HUB_PUBLIC_URL: ${NIMDEPLOY_HUB_PUBLIC_URL:-}
       # Native TLS and agent certificates: mount ./tls and set
       # NIMDEPLOY_HUB_TLS_CERT=/tls/hub.pem NIMDEPLOY_HUB_TLS_KEY=/tls/hub.key
       # NIMDEPLOY_HUB_TLS_CLIENT_CA=/tls/agents-ca.pem NIMDEPLOY_HUB_AGENT_CERTS=require

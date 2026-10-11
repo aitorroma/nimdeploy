@@ -71,10 +71,22 @@
     else if (ev.target.id === "ag-name") ev.target.dataset.typed = ev.target.value ? "1" : "";
     else if (ev.target.id === "ag-client") suggestName();
   });
-  document.addEventListener("change", function (ev) { if (ev.target.id === "ag-env") suggestName(); });
+  // A notification destination shows only the fields of its type.
+  function syncKinds() {
+    var k = document.getElementById("ch-kind");
+    if (!k) return;
+    document.querySelectorAll("[data-kinds]").forEach(function (el) {
+      el.hidden = el.dataset.kinds.split(" ").indexOf(k.value) < 0;
+    });
+  }
+  document.addEventListener("change", function (ev) {
+    if (ev.target.id === "ag-env") suggestName();
+    else if (ev.target.id === "ch-kind") syncKinds();
+  });
   document.addEventListener("htmx:afterSwap", function (ev) {
     if (ev.detail.target && ev.detail.target.id === "drawer") {
       openDrawer();
+      syncKinds();
       var n = document.getElementById("ag-name");
       if (n && n.value) n.dataset.typed = "1"; else suggestName();
     }
