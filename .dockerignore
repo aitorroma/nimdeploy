@@ -3,6 +3,7 @@
 !go.mod
 !go.sum
 !*.go
+!hubstatic/**
 !config.example.toml
 !deploy/secrets.env.example
 !deploy/nimdeploy-user.service
