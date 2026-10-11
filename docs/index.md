@@ -6,7 +6,7 @@ hide:
 
 <div class="hero" markdown>
 
-# nimdeploy
+# ![nimdeploy](assets/nimdeploy-logo.png#only-light){ .hero-logo width="420" } ![nimdeploy](assets/nimdeploy-logo-dark.png#only-dark){ .hero-logo width="420" }
 
 <p class="tagline">Push to your git host, and your server deploys itself.
 One static binary, signed webhooks, a log per deploy, no root needed.</p>

@@ -1,4 +1,9 @@
-# nimdeploy
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/nimdeploy-logo-dark.png">
+    <img alt="nimdeploy" src="docs/assets/nimdeploy-logo.png" width="420">
+  </picture>
+</h1>
 
 [![CI](https://github.com/aitorroma/nimdeploy/actions/workflows/ci.yml/badge.svg)](https://github.com/aitorroma/nimdeploy/actions/workflows/ci.yml)
 [![Docs](https://github.com/aitorroma/nimdeploy/actions/workflows/docs.yml/badge.svg)](https://nimdeploy.nimbox360.com)
