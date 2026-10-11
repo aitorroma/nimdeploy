@@ -226,7 +226,7 @@ const hubHTML = `
 {{define "overview"}}{{$l := .Lang}}{{with .Data}}
 <div class="view-head"><div><h1>{{t $l "ov.title"}}</h1><p>{{.Sub}}</p></div>
   <div class="actions"><div class="seg" role="group">{{range .EnvLinks}}<a href="{{.Href}}" class="{{if .On}}on{{end}}">{{.Label}}</a>{{end}}</div></div></div>
-<section class="kpis" id="kpis" hx-get="{{$.Path}}" hx-select="#kpis" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">
+<section class="kpis" id="kpis" hx-get="{{$.Path}}" hx-select="#kpis" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">
   {{range .KPIs}}<div class="kpi {{.Cls}}"><span class="label">{{.Label}}</span><b>{{.Value}}{{if .Unit}}<span style="font-size:16px;color:var(--muted);font-weight:500">{{.Unit}}</span>{{end}}</b><span class="delta {{.DeltaCls}}">{{.Delta}}</span>{{.Spark}}</div>{{end}}
 </section>
 <div class="grid-main">
@@ -235,7 +235,7 @@ const hubHTML = `
       <div class="panel-head"><h2>{{t $l "chart.title"}}</h2><span class="sub">{{t $l "chart.sub"}}</span><div class="actions legend"><span><i style="background:var(--ok)"></i>{{t $l "chart.success"}}</span><span><i style="background:var(--bad)"></i>{{t $l "chart.failed"}}</span><span><i style="background:var(--off)"></i>{{t $l "chart.other"}}</span></div></div>
       <div class="chart-wrap">{{.Chart}}</div>
     </section>
-    <section class="panel" id="matrix" hx-get="{{$.Path}}" hx-select="#matrix" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">
+    <section class="panel" id="matrix" hx-get="{{$.Path}}" hx-select="#matrix" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">
       <div class="panel-head"><h2>{{t $l "mx.title"}}</h2><span class="sub">{{t $l "mx.sub"}}</span></div>
       <div class="scroll"><table class="matrix">
         <thead><tr><th>{{t $l "mx.client"}}</th>{{range .Envs}}<th scope="col">{{.}}</th>{{end}}</tr></thead>
@@ -246,11 +246,11 @@ const hubHTML = `
     </section>
   </div>
   <div class="stack">
-    <section class="panel" id="attn" hx-get="{{$.Path}}" hx-select="#attn" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">
+    <section class="panel" id="attn" hx-get="{{$.Path}}" hx-select="#attn" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">
       <div class="panel-head"><h2>{{t $l "attn.title"}}</h2>{{if .Attn}}<span class="badge s-failed" style="margin-left:auto">{{len .Attn}}</span>{{end}}</div>
       {{if .Attn}}{{template "attn-list" .Attn}}{{else}}<div class="all-clear">{{t $l "attn.clear"}}</div>{{end}}
     </section>
-    <section class="panel" id="activity" hx-get="{{$.Path}}" hx-select="#activity" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">
+    <section class="panel" id="activity" hx-get="{{$.Path}}" hx-select="#activity" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">
       <div class="panel-head"><h2>{{t $l "act.title"}}</h2><div class="actions"><a href="/activity" style="font-size:12.5px">{{t $l "act.all"}}</a></div></div>
       {{template "timeline" .Timeline}}
     </section>
@@ -261,7 +261,7 @@ const hubHTML = `
 <div class="view-head"><div class="client-head"><span class="avatar" style="{{bg .Color}}">{{.Initials}}</span><div><h1>{{.Name}}{{if .Env}} <span class="muted" style="font-weight:500;text-transform:capitalize">· {{.Env}}</span>{{end}}</h1>
   <div class="labels">{{range .Labels}}<span class="lbl">{{.}}</span>{{end}}</div></div></div>
   <div class="actions"><span class="muted" style="align-self:center;font-size:12.5px">{{.Summary}}</span><button class="btn" type="button" hx-get="{{.AddHref}}" hx-target="#drawer">{{t $l "cl.add_server"}}</button></div></div>
-<div class="envgrid" id="envgrid" hx-get="{{$.Path}}" hx-select="#envgrid" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">{{range .Cols}}
+<div class="envgrid" id="envgrid" hx-get="{{$.Path}}" hx-select="#envgrid" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{range .Cols}}
   <section class="panel env-col">
     <div class="panel-head"><h2>{{.Name}}</h2><span class="env-tag {{if .Prod}}prod{{end}}">{{.Tag}}</span><span class="sub" style="margin-left:auto">{{.Count}}</span></div>
     {{range .Apps}}<div class="app-row" data-href="{{.Href}}" tabindex="0" role="link">
@@ -291,7 +291,7 @@ const hubHTML = `
   </div>
   <div class="stack">
     {{template "actions" (actionsOf $ .)}}
-    <section class="panel" id="runs" hx-get="{{$.Path}}" hx-select="#runs" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">
+    <section class="panel" id="runs" hx-get="{{$.Path}}" hx-select="#runs" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">
       <div class="panel-head"><h2>{{t $l "dp.runs"}}</h2></div>
       {{if .Runs}}<table class="runs-table"><tbody>{{range .Runs}}<tr class="{{if .Current}}cur{{end}}"><td class="muted num">{{.Ago}}</td><td>{{.Badge}}</td><td>{{if .Commit}}<span class="sha">{{.Commit}}</span>{{end}}</td><td class="muted">{{.By}}</td><td class="muted num" style="text-align:right">{{.Took}}</td></tr>{{end}}</tbody></table>{{else}}<p class="muted" style="padding:14px 16px;margin:0">{{t $l "app.no_runs"}}</p>{{end}}
       {{if .Labels}}<div class="agent-line"><span>{{t $l "dp.labels"}}</span>{{range .Labels}}<span class="lbl">{{.}}</span>{{end}}</div>{{end}}
@@ -316,7 +316,7 @@ const hubHTML = `
 {{define "agents"}}{{$l := .Lang}}
 <div class="view-head"><div><h1>{{t $l "ag.title"}}</h1><p>{{t $l "ag.sub"}}</p></div>
   <div class="actions"><button class="btn primary" type="button" hx-get="/ui/agents/new" hx-target="#drawer">{{t $l "top.add_agent"}}</button></div></div>
-<div class="agents" id="agentcards" hx-get="{{$.Path}}" hx-select="#agentcards" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">{{range .Data.Cards}}
+<div class="agents" id="agentcards" hx-get="{{$.Path}}" hx-select="#agentcards" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{range .Data.Cards}}
   <section class="panel agent {{.State}}" id="agent-{{.Name}}">
     <div class="top-row"><span class="avatar" style="{{bg .Color}}">{{.Initials}}</span><div><b>{{.Name}}</b><div class="muted" style="font-size:12px">{{.Where}}</div></div><span class="badge s-{{.State}}">{{.StateLabel}}</span></div>
     {{if .Pending}}<div class="setup" style="margin:0">{{t $l "ag.pending_note"}}</div>{{else}}
@@ -335,14 +335,14 @@ const hubHTML = `
   <button class="btn small danger" type="button" hx-get="/ui/agents/{{.Name}}/foot?confirm=1" hx-target="#foot-{{.Name}}" hx-swap="outerHTML">{{t .Lang "ag.revoke"}}</button>{{end}}</div>{{end}}
 
 {{define "activity"}}{{$l := .Lang}}<div class="view-head"><div><h1>{{t $l "act.title"}}</h1><p>{{t $l "act.sub"}}</p></div></div>
-<section class="panel" id="actpanel" hx-get="{{$.Path}}" hx-select="#actpanel" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">{{template "timeline" .Data.Timeline}}</section>{{end}}
+<section class="panel" id="actpanel" hx-get="{{$.Path}}" hx-select="#actpanel" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{template "timeline" .Data.Timeline}}</section>{{end}}
 
 {{define "attention"}}{{$l := .Lang}}<div class="view-head"><div><h1>{{t $l "attn.title"}}</h1><p>{{t $l "attn.sub"}}</p></div></div>
-<section class="panel" id="attnpanel" hx-get="{{$.Path}}" hx-select="#attnpanel" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s">{{if .Data.Attn}}{{template "attn-list" .Data.Attn}}{{else}}<div class="all-clear">{{t $l "attn.clear"}}</div>{{end}}</section>{{end}}
+<section class="panel" id="attnpanel" hx-get="{{$.Path}}" hx-select="#attnpanel" hx-target="this" hx-swap="outerHTML" hx-trigger="every 20s" hx-disinherit="*">{{if .Data.Attn}}{{template "attn-list" .Data.Attn}}{{else}}<div class="all-clear">{{t $l "attn.clear"}}</div>{{end}}</section>{{end}}
 
 {{define "steps"}}<div class="steps" id="steps"{{if .OOB}} hx-swap-oob="true"{{end}}>{{range $i, $s := .Names}}<span class="{{if eq (inc $i) $.Step}}on{{else if lt (inc $i) $.Step}}done{{end}}">{{$s}}</span>{{end}}</div>{{end}}
 
-{{define "drawer-new"}}{{$l := .Lang}}<div class="drawer-head"><h2>{{t $l "new.title"}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
+{{define "drawer-new"}}{{$l := .Lang}}<div class="drawer-head" data-keep><h2>{{t $l "new.title"}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
 <form class="drawer-body" id="agentForm" hx-post="/ui/agents" hx-target="#drawer" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
   {{template "steps" (steps $l 1)}}
   <p class="muted" style="margin:0">{{t $l "new.intro"}}</p>
@@ -363,7 +363,7 @@ const hubHTML = `
 </form>
 <div class="drawer-foot"><button class="btn" type="button" data-close>{{t $l "new.cancel"}}</button><button class="btn primary" type="submit" form="renewForm">{{t $l "ag.new_token"}}</button></div>{{end}}
 
-{{define "drawer-issued"}}{{$l := .Lang}}<div class="drawer-head"><h2>{{tf $l "new.connect" .Name}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
+{{define "drawer-issued"}}{{$l := .Lang}}<div class="drawer-head" data-keep data-reload><h2>{{tf $l "new.connect" .Name}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
 <div class="drawer-body">{{template "steps" (steps $l 2)}}
   <div class="field"><span class="lab">{{t $l "new.token"}}</span><div class="secret"><code id="tok">{{.Token}}</code><button class="btn small" type="button" data-copy="tok">{{t $l "new.copy"}}</button></div></div>
   <div class="note"><b>{{t $l "new.once"}}</b><span>{{t $l "new.once_d"}}</span></div>

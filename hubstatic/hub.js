@@ -22,7 +22,15 @@
   function openDrawer() { document.getElementById("drawer").hidden = false; document.getElementById("scrim").hidden = false; }
   function closeDrawer() {
     var d = document.getElementById("drawer");
+    if (d.hidden) return;
+    var reload = d.querySelector("[data-reload]");
     d.hidden = true; d.innerHTML = ""; document.getElementById("scrim").hidden = true;
+    if (reload) location.reload(); // show the agent just created
+  }
+  // A drawer with a form or a token shown once closes only with its buttons, never by a stray click or Escape.
+  function closeSoftly() {
+    var d = document.getElementById("drawer");
+    if (!d.querySelector("[data-keep]")) closeDrawer();
   }
   function filterTree() {
     var q = (document.getElementById("q").value || "").trim().toLowerCase();
@@ -47,7 +55,7 @@
     else if (t.classList.contains("chev")) { ev.preventDefault(); ev.stopPropagation(); t.closest(".client").classList.toggle("open"); }
   });
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape") closeDrawer();
+    if (ev.key === "Escape") closeSoftly();
     if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") { ev.preventDefault(); var q = document.getElementById("q"); if (q) q.focus(); }
     if (ev.key === "Enter" && ev.target.matches && ev.target.matches("[data-href]")) location.href = ev.target.dataset.href;
   });
@@ -75,5 +83,5 @@
     var row = ev.target.closest("[data-href]");
     if (row && !ev.target.closest("a,button")) location.href = row.dataset.href;
   });
-  document.addEventListener("click", function (ev) { if (ev.target.id === "scrim") closeDrawer(); });
+  document.addEventListener("click", function (ev) { if (ev.target.id === "scrim") closeSoftly(); });
 })();
