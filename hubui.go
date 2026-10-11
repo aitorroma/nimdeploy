@@ -159,7 +159,7 @@ const hubHTML = `
 <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"historyCacheSize":0}'>
 <title>{{block "title" .}}nimdeploy hub{{end}}</title>
 <link rel="stylesheet" href="/static/hub.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Crect width='18' height='18' rx='4' fill='%23121915'/%3E%3Cpath d='M2 13h3l3-8 3 8h5' fill='none' stroke='%23e2e9e3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="/static/mark.svg" type="image/svg+xml">
 <script src="/static/htmx.min.js" defer></script>
 <script src="/static/hub.js" defer></script>
 </head>{{end}}
@@ -171,7 +171,7 @@ const hubHTML = `
 <div class="app">
   <aside class="side" id="side" aria-label="Navigation">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 18 18"><path d="M2 13h3l3-8 3 8h5" fill="none" stroke="#121915" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 340 280"><defs><linearGradient id="nd-slab" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0057e6"/><stop offset=".55" stop-color="#1f5bff"/><stop offset="1" stop-color="#071a3d"/></linearGradient><linearGradient id="nd-arrow" x1="0" y1="0" x2=".6" y2="1"><stop offset="0" stop-color="#0a8bff"/><stop offset="1" stop-color="#0038ff"/></linearGradient></defs><path fill="#e8eefb" d="M2 75h75v190a8 8 0 0 1-8 8H40A38 38 0 0 1 2 235z"/><path fill="url(#nd-slab)" d="M2 38A30 30 0 0 1 48 13L198 115a40 40 0 0 1 25 37V246L2 85z"/><path fill="url(#nd-arrow)" d="M147 14a12 12 0 0 1 19-10L303 93C338 116 345 165 318 186L242 252V172a42 42 0 0 0-18-36L147 84z"/></svg></span>
       <span class="brand-name">nimdeploy<small>hub · {{.Version}}</small></span>
     </div>
     <nav class="nav">
@@ -383,9 +383,9 @@ systemctl --user restart nimdeploy</pre><button class="btn small" type="button" 
 {{define "drawer-wait"}}{{if .Connected}}<div class="waiting done" id="wait"><span class="check">✓</span><span><b>{{.Connected}}</b> <a href="{{.OpenHref}}">{{.OpenLabel}}</a></span></div>
 {{template "steps" (stepsOOB .Lang 3)}}{{else}}<div class="waiting" id="wait" hx-get="{{.WaitHref}}" hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"><span class="spinner"></span><span>{{wait .Lang .Name}}</span></div>{{end}}{{end}}
 
-{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nimdeploy hub</title><link rel="stylesheet" href="/static/hub.css"></head>
+{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nimdeploy hub</title><link rel="stylesheet" href="/static/hub.css"><link rel="icon" href="/static/mark.svg" type="image/svg+xml"></head>
 <body><form class="login" method="post" action="/login">
-<h1 style="font-size:20px">nimdeploy hub</h1>
+<h1 class="login-logo"><picture><source media="(prefers-color-scheme: dark)" srcset="/static/logo-dark.png"><img src="/static/logo.png" alt="nimdeploy" width="220"></picture><span>hub</span></h1>
 <p class="muted" style="margin:0">{{.Hint}}</p>
 {{if .Error}}<p class="error" style="margin:0">{{.Error}}</p>{{end}}
 <input type="hidden" name="next" value="{{.Next}}">

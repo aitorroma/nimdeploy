@@ -67,9 +67,11 @@ h2 { font-size: 14.5px; font-weight: 600; letter-spacing: -0.005em; }
 .app { display: grid; grid-template-columns: 272px minmax(0, 1fr); min-height: 100%; }
 .side { background: linear-gradient(180deg, var(--side) 0%, var(--side-2) 100%); color: var(--side-fg); display: flex; flex-direction: column; position: sticky; top: env(safe-area-inset-top, 0px); height: 100vh; overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 18px 18px 16px; }
-.brand-mark { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--fg); position: relative; overflow: hidden; flex: none; }
-.brand-mark svg { width: 18px; height: 18px; }
-:root .brand-mark { background: #e2e9e3; }
+.brand-mark { width: 34px; height: 30px; display: grid; place-items: center; flex: none; }
+.brand-mark svg { width: 34px; height: 28px; }
+.login-logo { margin: 0; display: flex; align-items: flex-end; gap: 8px; }
+.login-logo img { display: block; width: 220px; height: auto; }
+.login-logo span { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--muted); padding-bottom: 4px; }
 .brand-name { font-family: var(--font-display); font-weight: 800; font-size: 16px; letter-spacing: -0.01em; line-height: 1.1; }
 .brand-name small { display: block; font-family: var(--font-mono); font-weight: 400; font-size: 10.5px; color: var(--side-muted); letter-spacing: .02em; }
 .nav { display: flex; flex-direction: column; gap: 2px; padding: 4px 10px 0; }
