@@ -108,7 +108,7 @@ a NetworkPolicy). Main values:
 | `hub.tls.agentCerts` | `optional` | or `require` |
 | `hub.tls.certificate.enabled` | `false` | cert-manager issues the hub's certificate (`issuerRef`, default ClusterIssuer `letsencrypt-prod`) |
 | `hub.agentCA.enabled` | `false` | the hub's own CA for [agent certificates](#agent-certificates), in a small volume (or `hub.agentCA.existingSecret`) |
-| `ingressRouteTCP.enabled` | `false` | Traefik route with TLS passthrough (`ingressRouteTCP.host`) |
+| `ingressRouteTCP.enabled` | `false` | Traefik route with TLS passthrough (`ingressRouteTCP.host`); plain HTTP redirects to HTTPS (`redirectHTTP`) |
 
 For client certificates the hub must see the TLS handshake: expose it with
 TLS passthrough or `service.type: LoadBalancer`, not with an Ingress that

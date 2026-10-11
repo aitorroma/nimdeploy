@@ -71,6 +71,10 @@ ingressRouteTCP:
   enabled: false
   host: hub.example.com
   entryPoints: [websecure]
+  # Redirect plain HTTP on these entry points to HTTPS (cert-manager's HTTP-01
+  # challenges still get through: their routes are more specific).
+  redirectHTTP: true
+  httpEntryPoints: [web]
 
 ingress:
   enabled: false

@@ -15,7 +15,7 @@ spec:
   storageClassName: {{ . }}
   {{- end }}
   resources:
-    requests: {storage: {{ .Values.hub.agentCA.persistence.size }}}
+    requests: {storage: {{ .Values.hub.agentCA.persistence.size | default "16Mi" }}}
 {{- end }}
 {{- if .Values.hub.tls.certificate.enabled }}
 ---
@@ -27,7 +27,7 @@ metadata:
 spec:
   secretName: {{ include "hub.tlsSecret" . }}
   dnsNames: [{{ .Values.ingressRouteTCP.enabled | ternary .Values.ingressRouteTCP.host .Values.ingress.host | quote }}]
-  issuerRef: {{- toYaml .Values.hub.tls.certificate.issuerRef | nindent 4 }}
+  issuerRef: {{- toYaml (.Values.hub.tls.certificate.issuerRef | default (dict "name" "letsencrypt-prod" "kind" "ClusterIssuer")) | nindent 4 }}
 {{- end }}
 {{- if .Values.ingressRouteTCP.enabled }}
 {{- if not (include "hub.tlsSecret" .) }}
@@ -40,7 +40,7 @@ metadata:
   name: {{ include "hub.fullname" . }}
   labels: {{- include "hub.labels" . | nindent 4 }}
 spec:
-  entryPoints: {{- toYaml .Values.ingressRouteTCP.entryPoints | nindent 4 }}
+  entryPoints: {{- toYaml (.Values.ingressRouteTCP.entryPoints | default (list "websecure")) | nindent 4 }}
   routes:
     - match: HostSNI(`{{ .Values.ingressRouteTCP.host }}`)
       services:
@@ -48,4 +48,29 @@ spec:
           port: {{ .Values.service.port }}
   tls:
     passthrough: true
+{{- end }}
+{{- if and .Values.ingressRouteTCP.enabled (ne (toString .Values.ingressRouteTCP.redirectHTTP) "false") }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "hub.fullname" . }}-https
+  labels: {{- include "hub.labels" . | nindent 4 }}
+spec:
+  redirectScheme: {scheme: https, permanent: true}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "hub.fullname" . }}-http
+  labels: {{- include "hub.labels" . | nindent 4 }}
+spec:
+  entryPoints: {{- toYaml (.Values.ingressRouteTCP.httpEntryPoints | default (list "web")) | nindent 4 }}
+  routes:
+    - match: Host(`{{ .Values.ingressRouteTCP.host }}`)
+      kind: Rule
+      middlewares: [{name: {{ include "hub.fullname" . }}-https}]
+      services:
+        - name: {{ include "hub.fullname" . }}
+          port: {{ .Values.service.port }}
 {{- end }}
