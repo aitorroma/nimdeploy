@@ -64,6 +64,7 @@ retain = 30                   # log files kept per deploy (0 = keep all)
 #url = "https://hub.example.com"
 #agent = "acme-prod-1"         # default: short hostname
 #token_env = "NIMDEPLOY_HUB_TOKEN"
+#accept_commands = false      # true: the hub may run deploys again and roll them back
 
 [deploy.frontend]
 # provider = "github"         # github (default), gitea, forgejo, gitlab, bitbucket

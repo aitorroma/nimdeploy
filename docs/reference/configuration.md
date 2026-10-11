@@ -98,11 +98,20 @@ See [Notifications](../guides/notifications.md).
 | `api_token_env` | – | env var with an API token allowed to purge the cache |
 | `api_url` | `https://api.cloudflare.com/client/v4` | |
 
-## `[hub]` TLS
+## `[hub]`
 
-Besides `url`, `agent`, `token_env`, `send_log_tail` and `heartbeat`, the
-agent takes `ca_file` (the hub's CA) and `cert_file`/`key_file` (its client
-certificate, when the hub requires one). See [TLS](../guides/tls.md#hub-and-agents).
+The connection to the [central hub](../guides/hub.md).
+
+| Key | Default | |
+|---|---|---|
+| `url` | – | the hub's URL |
+| `agent` | short hostname | this server's name in the hub |
+| `token_env` | – | env var with the agent's token |
+| `send_log_tail` | `20` | log lines sent with a failed deploy (0-500) |
+| `heartbeat` | `1m` | |
+| `accept_commands` | `false` | `true`: the hub may run a deploy again or roll it back ([commands](../guides/hub.md#commands-from-the-hub)) |
+| `ca_file` | system roots | the hub's CA, for a private certificate |
+| `cert_file`, `key_file` | – | the agent's client certificate, when the hub requires one ([TLS](../guides/tls.md#hub-and-agents)) |
 
 ## `[otel]`
 

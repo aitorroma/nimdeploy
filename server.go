@@ -321,6 +321,7 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			Ref:        match.Ref,
 			Branch:     d.Branch,
 			Commit:     match.Commit,
+			Message:    commitTitle(match.Message),
 			Pusher:     ev.Pusher,
 			Params:     params,
 		})
@@ -559,6 +560,18 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, d *DeployConfig,
 		}
 		writeJSON(w, http.StatusAccepted, res)
 	}
+}
+
+// commitTitle is a commit message's first line, bounded, for the state and the hub.
+func commitTitle(msg string) string {
+	title, _, _ := strings.Cut(strings.TrimSpace(msg), "\n")
+	title = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(title))
+	return truncate(title, 160)
 }
 
 // bufferedResponse keeps one deploy's answer to a shared webhook.

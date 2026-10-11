@@ -108,7 +108,7 @@ func (e *env) push(t *testing.T, o pushOpts) *httptest.ResponseRecorder {
 	if o.event == "" {
 		o.event = "push"
 	}
-	body := []byte(`{"ref":"` + o.ref + `","after":"` + o.commit + `","repository":{"full_name":"acme/agency"},"pusher":{"name":"dev"}}`)
+	body := []byte(`{"ref":"` + o.ref + `","after":"` + o.commit + `","repository":{"full_name":"acme/agency"},"pusher":{"name":"dev"},"head_commit":{"message":"fix footer\n\nlonger body"}}`)
 	if o.contentType == "application/x-www-form-urlencoded" {
 		body = []byte("payload=" + url.QueryEscape(string(body)))
 	}

@@ -97,14 +97,14 @@ heartbeat = "10s"
 		t.Errorf("anonymous dashboard: %d", code)
 	}
 	code, body := hubGet(t, srv, "/", testHubToken)
-	if code != 200 || !strings.Contains(body, "Acme Corp") || !strings.Contains(body, `class="chip s-failed`) {
+	if code != 200 || !strings.Contains(body, "Acme Corp") || !strings.Contains(body, `<span class="pip bad"></span>agency</a>`) {
 		t.Errorf("overview %d:\n%s", code, body)
 	}
 	code, body = hubGet(t, srv, "/d/stage-1/agency", testHubToken)
-	if code != 200 || !strings.Contains(body, "step 2") || !strings.Contains(body, "Acme Corp · stage · agency") {
+	if code != 200 || !strings.Contains(body, "step 2") || !strings.Contains(body, "<h1>agency <span class=\"badge s-failed\">failed</span></h1>") {
 		t.Errorf("detail %d:\n%s", code, body)
 	}
-	if code, body := hubGet(t, srv, "/agents", testHubToken); code != 200 || !strings.Contains(body, "a-online") {
+	if code, body := hubGet(t, srv, "/agents", testHubToken); code != 200 || !strings.Contains(body, `class="badge s-online">online`) {
 		t.Errorf("agents page %d:\n%s", code, body)
 	}
 	if code, _ := hubGet(t, srv, "/?client=Nobody", testHubToken); code != 200 {

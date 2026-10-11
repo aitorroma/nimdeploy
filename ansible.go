@@ -79,6 +79,14 @@ type AnsibleSummary struct {
 	FailedHosts      []string `json:"failed_hosts,omitempty"`
 	// UnreachableHosts are capped like FailedHosts, at 20.
 	UnreachableHosts []string `json:"unreachable_hosts,omitempty"`
+	// HostResults is every host with its outcome (up to 300), for the hub.
+	HostResults []AnsibleHost `json:"host_results,omitempty"`
+}
+
+// AnsibleHost is one host's outcome in a run: ok, changed, unreachable or failed.
+type AnsibleHost struct {
+	Host    string `json:"host"`
+	Outcome string `json:"outcome"`
 }
 
 var (
@@ -446,15 +454,22 @@ func (p *recapParser) summary() *AnsibleSummary {
 		s.Skipped += n[4]
 		s.Rescued += n[5]
 		s.Ignored += n[6]
+		outcome := "ok"
 		switch {
 		case n[3] > 0:
 			s.HostsFailed++
+			outcome = "failed"
 		case n[2] > 0:
 			s.HostsUnreachable++
+			outcome = "unreachable"
 		case n[1] > 0:
 			s.HostsChanged++
+			outcome = "changed"
 		default:
 			s.HostsOk++
+		}
+		if len(s.HostResults) < 300 {
+			s.HostResults = append(s.HostResults, AnsibleHost{Host: h, Outcome: outcome})
 		}
 		if n[3] > 0 && len(s.FailedHosts) < 20 {
 			s.FailedHosts = append(s.FailedHosts, h)

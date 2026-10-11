@@ -40,7 +40,7 @@ spec:
     - port: http
       path: /metrics
       interval: {{ .Values.serviceMonitor.interval }}
-      {{- if .Values.hub.tls.existingSecret }}
+      {{- if include "hub.tlsSecret" . }}
       scheme: https
       tlsConfig: {insecureSkipVerify: true}
       {{- end }}

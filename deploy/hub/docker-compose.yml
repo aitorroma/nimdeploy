@@ -38,6 +38,10 @@ services:
       NIMDEPLOY_HUB_TLS_KEY: ${NIMDEPLOY_HUB_TLS_KEY:-}
       NIMDEPLOY_HUB_TLS_CLIENT_CA: ${NIMDEPLOY_HUB_TLS_CLIENT_CA:-}
       NIMDEPLOY_HUB_AGENT_CERTS: ${NIMDEPLOY_HUB_AGENT_CERTS:-optional}
+      # The hub's own CA for agent certificates (needs NIMDEPLOY_HUB_TLS_CERT):
+      # mount a directory owned by 65532 (install -d -o 65532 -g 65532 -m 700 ca)
+      # as /ca and set NIMDEPLOY_HUB_AGENT_CA_DIR=/ca.
+      NIMDEPLOY_HUB_AGENT_CA_DIR: ${NIMDEPLOY_HUB_AGENT_CA_DIR:-}
     ports:
       - "${NIMDEPLOY_HUB_PUBLISH:-127.0.0.1:9100}:9100"
     networks: [internal, default]

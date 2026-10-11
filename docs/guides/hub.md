@@ -33,7 +33,12 @@ What agents send:
 | `deploy.started` | a run starts | state: trigger, commit, pusher, labels |
 | `deploy.finished` | a run ends | state, duration, error, and on failure the last log lines (`send_log_tail`) |
 | `deploy.rejected` | a request was refused (bad signature, wrong repository…) | reason |
+| `command.refused` | the agent refused a [command](#commands-from-the-hub) | reason |
 | heartbeat | every minute | version, uptime, deploys with their config (provider, repository, branch, schedule, labels) and state, events waiting |
+
+A finished run also carries the commit message's first line, the time of each
+phase (queue, CI wait, hooks, command) and, for [Ansible](ansible.md), the
+outcome per host.
 
 The full log, `params`, the request body and secrets are never sent.
 
@@ -101,14 +106,28 @@ a NetworkPolicy). Main values:
 | `hub.tls.existingSecret` | – | a `kubernetes.io/tls` Secret: the hub serves HTTPS itself |
 | `hub.tls.clientCASecret` | – | Secret with `ca.crt`: the agents' CA (mTLS) |
 | `hub.tls.agentCerts` | `optional` | or `require` |
+| `hub.tls.certificate.enabled` | `false` | cert-manager issues the hub's certificate (`issuerRef`, default ClusterIssuer `letsencrypt-prod`) |
+| `hub.agentCA.enabled` | `false` | the hub's own CA for [agent certificates](#agent-certificates), in a small volume (or `hub.agentCA.existingSecret`) |
+| `ingressRouteTCP.enabled` | `false` | Traefik route with TLS passthrough (`ingressRouteTCP.host`) |
 
-For mTLS the hub must see the client certificate: expose it with
-`service.type: LoadBalancer` (or an Ingress with TLS passthrough) instead of
-terminating TLS at the Ingress.
+For client certificates the hub must see the TLS handshake: expose it with
+TLS passthrough or `service.type: LoadBalancer`, not with an Ingress that
+terminates TLS. With Traefik (k3s) and cert-manager:
+
+```bash
+helm upgrade --install hub oci://ghcr.io/aitorroma/charts/nimdeploy-hub -n nimdeploy --create-namespace \
+  --set hub.tls.certificate.enabled=true --set hub.agentCA.enabled=true \
+  --set ingressRouteTCP.enabled=true --set ingressRouteTCP.host=hub.example.com
+```
 
 ## Connect a server
 
-On the hub, create the agent. Its token is printed once:
+In the dashboard, **Add agent**: pick the client (or type a new one) and the
+environment; the agent's name is filled in from them. The hub creates the
+agent and shows, once, its token and what to add on the server, then waits
+for its first heartbeat and tells you when it arrives.
+
+From a shell it is the same, and the token is printed once:
 
 ```bash
 docker compose exec hub nimdeploy hub agent add acme-stage
@@ -145,14 +164,71 @@ the config shows as *removed* until its events expire.
 
 ## Dashboard
 
-- **Deploys**: counters (failing, running, agents offline), filters by
-  client, environment, agent and status, a client × environment matrix with
-  every deploy colored by its last result, the list of deploys and the latest
-  activity. It refreshes every 30 seconds.
-- **Deploy detail**: repository, branch, last commit, labels, the history
-  of runs and rejected requests, and the log tail of failed runs.
-- **Agents**: online/offline, host, version, last heartbeat, uptime, events
-  waiting in its outbox.
+The sidebar lists clients (from the `client` label) and their environments,
+with a dot per deploy colored by its last result. ⌘K / Ctrl+K filters it.
+
+- **Overview**: deploys and failures this week, success rate, servers online,
+  deploys per day, a client × environment matrix, what needs attention and
+  the latest activity. Filter it by environment.
+- **Client / environment**: its deploys with their last runs, schedule and
+  who triggered them, and the server they run on.
+- **Deploy**: last run, commit and message, source, the error, the phases of
+  the run on a timeline, the hosts of an Ansible run, the log tail, the
+  history of runs and, when the agent accepts them, [commands](#commands-from-the-hub).
+- **Activity** (last 24 hours) and **Needs attention**: failed deploys,
+  servers offline or with events waiting, agents that never connected,
+  certificates about to expire.
+- **Agents**: heartbeats of the last 30 minutes, host, version, uptime,
+  certificate and commands; add agents, give them a new token or revoke them.
+
+Pages refresh on their own every 20 seconds. The dashboard is in English and
+Spanish: it follows the browser's language, and the switch at the bottom of
+the sidebar remembers your choice. Light and dark themes follow the system.
+
+## Agent certificates
+
+With `-agent-ca-dir` the hub keeps its own small CA and issues a client
+certificate per agent: tick **Require a client certificate** when adding the
+agent (or giving it a new token). The drawer gives you the certificate and its
+key to download, once; copy them to the server and point `cert_file` and
+`key_file` at them. The certificate is valid for a year and carries the
+agent's name; the hub pins its fingerprint, so another agent's certificate,
+or an old one after a new token, is refused. Agents whose certificate expires
+within 30 days show under **Needs attention**.
+
+```bash
+nimdeploy hub serve -tls-cert hub.pem -tls-key hub.key -agent-ca-dir /var/lib/nimdeploy-hub/ca
+```
+
+- The hub must terminate TLS itself (`-tls-cert`), to see the certificate.
+- The directory is created with `ca.pem` and `ca.key` (mode 0600) when it is
+  empty. Back it up: if it's lost, the hub creates a new CA and every agent
+  with a certificate needs a new one.
+- The agent's token still signs every request; the certificate is a second
+  factor tied to the server.
+- `-tls-client-ca` (your own CA) still works alongside it.
+
+## Commands from the hub
+
+From a deploy's page you can **Run again** (the last commit) or **Roll back**
+(to the previous successful commit). The agent must opt in:
+
+```toml title="config.toml"
+[hub]
+accept_commands = true
+```
+
+- The hub never connects to the server: the agent asks for commands with a
+  signed long poll (`GET /api/v1/commands`) and checks the hub's signature on
+  the answer.
+- A command runs as a normal deploy with trigger `hub`, through the same
+  queue, hooks and notifications, and shows in the deploy's history with who
+  asked for it.
+- Commands not picked up in 10 minutes expire. The agent refuses unknown
+  deploys, and a rollback without a previous successful commit or outside
+  git, and the reason shows on the deploy's page.
+- Every action in the dashboard needs the session's CSRF token; the hub's
+  Content-Security-Policy only allows its own scripts.
 
 ## API and metrics
 
@@ -192,7 +268,8 @@ browser session or the proxy header.
 ## Command line
 
 ```text
-nimdeploy hub serve [-listen ADDR] [-database URL] [-trusted-header H] [-retain-days N] [-no-auth]
+nimdeploy hub serve [-listen ADDR] [-database URL] [-trusted-header H] [-retain-days N]
+                    [-tls-cert F -tls-key F] [-tls-client-ca F] [-agent-ca-dir DIR] [-no-auth]
 nimdeploy hub agent add|list|revoke [name]
 nimdeploy hub healthcheck
 ```
@@ -209,6 +286,7 @@ nimdeploy hub healthcheck
 | `NIMDEPLOY_HUB_TLS_CERT`, `NIMDEPLOY_HUB_TLS_KEY` | serve HTTPS ([details](tls.md#hub-and-agents)) |
 | `NIMDEPLOY_HUB_TLS_CLIENT_CA` | CA of the agents' certificates |
 | `NIMDEPLOY_HUB_AGENT_CERTS` | `optional` (default) or `require`: each agent's certificate must carry its name |
+| `NIMDEPLOY_HUB_AGENT_CA_DIR` | the hub's CA for [agent certificates](#agent-certificates) |
 
 Without a token or a trusted header, the hub only starts on a loopback
 address (or with `-no-auth`).
@@ -227,6 +305,8 @@ docker compose start sqld
 ```
 
 On Kubernetes, use your volume snapshots (or Velero) for the sqld PVC.
+Back up the agent CA too (`-agent-ca-dir`, or the `<release>-ca` PVC), once:
+it doesn't change.
 
 Losing the data isn't serious. With the next heartbeat the agents send their
 inventory again. You only lose the event history and the agents' tokens, and

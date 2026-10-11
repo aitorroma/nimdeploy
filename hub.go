@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +61,8 @@ type hubOptions struct {
 	// AgentCerts: "optional" (a certificate, when sent, must name the agent)
 	// or "require" (every agent must send one with its name).
 	AgentCerts string
+	// AgentCADir holds the hub's own CA for agent certificates (created when empty).
+	AgentCADir string
 }
 
 func envOr(name, def string) string {
@@ -85,6 +88,7 @@ func hubFlags(fs *flag.FlagSet, serve bool) *hubOptions {
 		fs.StringVar(&o.TLSCert, "tls-cert", os.Getenv("NIMDEPLOY_HUB_TLS_CERT"), "serve HTTPS with this certificate ($NIMDEPLOY_HUB_TLS_CERT); re-read when it changes")
 		fs.StringVar(&o.TLSKey, "tls-key", os.Getenv("NIMDEPLOY_HUB_TLS_KEY"), "its private key ($NIMDEPLOY_HUB_TLS_KEY)")
 		fs.StringVar(&o.TLSClientCA, "tls-client-ca", os.Getenv("NIMDEPLOY_HUB_TLS_CLIENT_CA"), "CA of the agents' client certificates ($NIMDEPLOY_HUB_TLS_CLIENT_CA)")
+		fs.StringVar(&o.AgentCADir, "agent-ca-dir", os.Getenv("NIMDEPLOY_HUB_AGENT_CA_DIR"), "directory with the hub's CA for agent certificates, created when empty; needs -tls-cert ($NIMDEPLOY_HUB_AGENT_CA_DIR)")
 		fs.StringVar(&o.AgentCerts, "agent-certs", envOr("NIMDEPLOY_HUB_AGENT_CERTS", "optional"), "with -tls-client-ca: require a certificate named like the agent (require), or check it only when sent (optional) ($NIMDEPLOY_HUB_AGENT_CERTS)")
 	}
 	return o
@@ -295,6 +299,17 @@ func hubServe(o *hubOptions) int {
 		return 1
 	}
 	h := &hubServer{store: store, opts: o, started: time.Now()}
+	if o.AgentCADir != "" {
+		if o.TLSCert == "" {
+			log.Printf("hub: -agent-ca-dir needs -tls-cert: the hub must terminate TLS to see the agents' certificates")
+			return 1
+		}
+		if h.ca, err = loadOrCreateCA(o.AgentCADir); err != nil {
+			log.Printf("hub: %v", err)
+			return 1
+		}
+		watchCertExpiry("agent_ca", filepath.Join(o.AgentCADir, hubCAFile))
+	}
 
 	go func() {
 		t := time.NewTicker(time.Hour)
@@ -327,12 +342,18 @@ func hubServe(o *hubOptions) int {
 			log.Printf("hub: tls: %v", err)
 			return 1
 		}
+		if h.ca != nil {
+			tc = withClientCA(tc, h.ca.cert)
+		}
 		ln = tls.NewListener(ln, tc)
 		watchCertExpiry("server", o.TLSCert)
 		watchCertExpiry("client_ca", o.TLSClientCA)
 		scheme = "https"
 		if o.TLSClientCA != "" {
 			scheme += ", agent certificates " + o.AgentCerts
+		}
+		if h.ca != nil {
+			scheme += ", agent CA " + o.AgentCADir
 		}
 	}
 	auth := "token"
@@ -377,11 +398,14 @@ type hubServer struct {
 	store   *hubStore
 	opts    *hubOptions
 	started time.Time
+	ca      *hubCA // agent certificates; nil without -agent-ca-dir
+	waiters commandWaiters
 }
 
 func (h *hubServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+hubEventsPath, h.handleEvents)
+	mux.HandleFunc("GET "+hubCommandsPath, h.handleCommands)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -398,12 +422,24 @@ func (h *hubServer) routes() http.Handler {
 
 	mux.HandleFunc("GET /{$}", h.ui(h.pageOverview))
 	mux.HandleFunc("GET /agents", h.ui(h.pageAgents))
+	mux.HandleFunc("GET /activity", h.ui(h.pageActivity))
+	mux.HandleFunc("GET /attention", h.ui(h.pageAttention))
+	mux.HandleFunc("GET /c/{client}", h.ui(h.pageClient))
+	mux.HandleFunc("GET /c/{client}/{env}", h.ui(h.pageClient))
 	mux.HandleFunc("GET /d/{agent}/{deploy}", h.ui(h.pageDeploy))
-	mux.HandleFunc("GET /static/hub.css", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-		_, _ = io.WriteString(w, hubCSS)
-	})
+	mux.HandleFunc("GET /lang/{lang}", h.handleLang)
+	mux.Handle("GET /static/", hubStatic())
+
+	mux.HandleFunc("GET /ui/agents/new", h.ui(h.uiNewAgent))
+	mux.HandleFunc("POST /ui/agents", h.changes(h.uiCreateAgent))
+	mux.HandleFunc("GET /ui/agents/{name}/wait", h.ui(h.uiWaitAgent))
+	mux.HandleFunc("GET /ui/agents/{name}/renew", h.ui(h.uiRenewConfirm))
+	mux.HandleFunc("POST /ui/agents/{name}/renew", h.changes(h.uiRenew))
+	mux.HandleFunc("GET /ui/agents/{name}/foot", h.ui(h.uiAgentFoot))
+	mux.HandleFunc("POST /ui/agents/{name}/revoke", h.changes(h.uiRevoke))
+	mux.HandleFunc("GET /ui/d/{agent}/{deploy}/actions", h.ui(h.uiActions))
+	mux.HandleFunc("GET /ui/d/{agent}/{deploy}/confirm/{action}", h.ui(h.uiConfirm))
+	mux.HandleFunc("POST /ui/d/{agent}/{deploy}/{action}", h.changes(h.uiCommand))
 
 	mux.HandleFunc("GET /api/v1/deploys", h.api(h.apiDeploys))
 	mux.HandleFunc("GET /api/v1/agents", h.api(h.apiAgents))
@@ -440,41 +476,16 @@ func verifyHubSignature(token, ts string, body []byte, sig string, now time.Time
 }
 
 func (h *hubServer) handleEvents(w http.ResponseWriter, r *http.Request) {
-	agent := r.Header.Get(hubAgentHeader)
-	if !agentNameRe.MatchString(agent) {
-		writeError(w, http.StatusUnauthorized, "missing or bad "+hubAgentHeader)
-		return
-	}
-	if h.opts.TLSClientCA != "" {
-		// A verified certificate must name this agent; with "require" one must be sent.
-		names := clientNames(r)
-		if (len(names) > 0 || h.opts.AgentCerts == tlsClientAuthRequire) && !clientAllowed(r, []string{agent}) {
-			log.Printf("hub: refused events from %s (%s): client certificate %v is not for this agent", agent, clientAddr(r), names)
-			writeError(w, http.StatusUnauthorized, "client certificate required for agent "+agent)
-			return
-		}
-	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, hubMaxBody))
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "body too large")
 		return
 	}
-	token, err := h.store.agentToken(r.Context(), agent)
-	if err != nil {
-		if strings.HasPrefix(err.Error(), "libsql") {
-			log.Printf("hub: %v", err)
-			writeError(w, http.StatusServiceUnavailable, "database unavailable")
-			return
-		}
-		log.Printf("hub: refused events from %s (%s): unknown or revoked agent", agent, clientAddr(r))
-		writeError(w, http.StatusUnauthorized, "unknown or revoked agent")
+	a, ok := h.authAgent(w, r, body)
+	if !ok {
 		return
 	}
-	if err := verifyHubSignature(token, r.Header.Get(hubTimestampHeader), body, r.Header.Get(hubSignatureHeader), time.Now()); err != nil {
-		log.Printf("hub: refused events from %s (%s): %v", agent, clientAddr(r), err)
-		writeError(w, http.StatusUnauthorized, err.Error())
-		return
-	}
+	agent := a.Name
 	var batch hubBatch
 	if err := json.Unmarshal(body, &batch); err != nil {
 		writeError(w, http.StatusBadRequest, "bad JSON: "+err.Error())
@@ -517,7 +528,7 @@ func clip(s string, n int) string {
 // skipped so older hubs accept newer agents.
 func sanitizeHubEvent(ev hubEvent) (hubEvent, bool) {
 	switch ev.Type {
-	case hubEventDeployStart, hubEventDeployDone, hubEventRejected, hubEventHeartbeat:
+	case hubEventDeployStart, hubEventDeployDone, hubEventRejected, hubEventHeartbeat, hubEventCommandRefused:
 	default:
 		return ev, false
 	}
@@ -673,7 +684,7 @@ func (h *hubServer) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	h.render(w, http.StatusOK, "login", map[string]any{"Next": safeNext(r.URL.Query().Get("next"))})
+	h.render(w, http.StatusOK, "login", loginData(r, safeNext(r.URL.Query().Get("next")), ""))
 }
 
 func (h *hubServer) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +697,7 @@ func (h *hubServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(r.FormValue("token")), []byte(h.opts.uiToken)) != 1 {
 		log.Printf("hub: failed login from %s", clientAddr(r))
 		time.Sleep(time.Second)
-		h.render(w, http.StatusUnauthorized, "login", map[string]any{"Next": next, "Error": "Wrong token"})
+		h.render(w, http.StatusUnauthorized, "login", loginData(r, next, hubT(hubLang(r), "login.wrong")))
 		return
 	}
 	exp := time.Now().Add(hubSessionMaxAge).Unix()
@@ -734,15 +745,19 @@ func (h *hubServer) views(ctx context.Context) ([]hubView, []hubAgentRow, error)
 	}
 	now := time.Now()
 	online := map[string]bool{}
+	byName := map[string]hubAgentRow{}
 	for _, a := range agents {
 		online[a.Name] = a.RevokedAt == "" && a.online(now)
+		byName[a.Name] = a
 	}
 	out := make([]hubView, 0, len(deps))
 	for _, d := range deps {
 		if !d.InInventory && d.State.Status == "" {
 			continue
 		}
-		v := hubView{hubDeployRow: d, AgentOnline: online[d.Agent], Client: d.Labels["client"], Env: d.Labels["environment"], When: d.UpdatedAt}
+		ag := byName[d.Agent]
+		v := hubView{hubDeployRow: d, AgentOnline: online[d.Agent], Client: firstNonEmpty(d.Labels["client"], ag.ClientName()),
+			Env: firstNonEmpty(d.Labels["environment"], ag.EnvName()), When: d.UpdatedAt}
 		if v.State.FinishedAt != nil {
 			v.When = *v.State.FinishedAt
 		} else if v.State.StartedAt != nil {
@@ -805,138 +820,6 @@ func buildMatrix(views []hubView) hubMatrix {
 		m.Envs = append(m.Envs[1:], "")
 	}
 	return m
-}
-
-func (h *hubServer) pageOverview(w http.ResponseWriter, r *http.Request, who string) {
-	views, agents, err := h.views(r.Context())
-	if err != nil {
-		h.renderError(w, err)
-		return
-	}
-	q := r.URL.Query()
-	f := hubFilter{Client: q.Get("client"), Env: q.Get("environment"), Agent: q.Get("agent"), Status: q.Get("status")}
-	var shown []hubView
-	failing, running := 0, 0
-	for _, v := range views {
-		if !f.match(v) {
-			continue
-		}
-		shown = append(shown, v)
-		switch v.State.Status {
-		case StatusFailed:
-			failing++
-		case StatusRunning, StatusWaiting:
-			running++
-		}
-	}
-	now := time.Now()
-	online, offline := 0, 0
-	for _, a := range agents {
-		if a.RevokedAt != "" || a.LastSeen.IsZero() {
-			continue
-		}
-		if a.online(now) {
-			online++
-		} else {
-			offline++
-		}
-	}
-	events, err := h.store.events(r.Context(), f.Agent, "", "", 40)
-	if err != nil {
-		h.renderError(w, err)
-		return
-	}
-	labelsOf := map[[2]string]map[string]string{}
-	for _, v := range views {
-		labelsOf[[2]string{v.Agent, v.Deploy}] = v.Labels
-	}
-	var timeline []hubEventRow
-	for _, e := range events {
-		if l := labelsOf[[2]string{e.Agent, e.Deploy}]; l != nil {
-			e.Labels = l
-		}
-		if (f.Client == "" || e.Labels["client"] == f.Client) && (f.Env == "" || e.Labels["environment"] == f.Env) {
-			timeline = append(timeline, e)
-		}
-		if len(timeline) == 15 {
-			break
-		}
-	}
-	allDeps := make([]hubDeployRow, len(views))
-	for i, v := range views {
-		allDeps[i] = v.hubDeployRow
-	}
-	agentNames := make([]string, 0, len(agents))
-	for _, a := range agents {
-		agentNames = append(agentNames, a.Name)
-	}
-	envs := labelValues(allDeps, "environment")
-	sortEnvs(envs)
-	h.render(w, http.StatusOK, "overview", map[string]any{
-		"Who": who, "Filter": f, "Matrix": buildMatrix(shown), "Deploys": shown, "Timeline": timeline,
-		"Clients": labelValues(allDeps, "client"), "Envs": envs, "AgentNames": agentNames,
-		"Statuses": []string{StatusFailed, StatusRunning, StatusSuccess, StatusSkipped, StatusInterrupted, StatusNever},
-		"Failing":  failing, "Running": running, "Online": online, "Offline": offline, "Total": len(shown),
-	})
-}
-
-func (h *hubServer) pageAgents(w http.ResponseWriter, r *http.Request, who string) {
-	views, agents, err := h.views(r.Context())
-	if err != nil {
-		h.renderError(w, err)
-		return
-	}
-	count := map[string]int{}
-	for _, v := range views {
-		if v.InInventory {
-			count[v.Agent]++
-		}
-	}
-	h.render(w, http.StatusOK, "agents", map[string]any{"Who": who, "Agents": agents, "Count": count})
-}
-
-func (h *hubServer) pageDeploy(w http.ResponseWriter, r *http.Request, who string) {
-	agent, deploy := r.PathValue("agent"), r.PathValue("deploy")
-	views, _, err := h.views(r.Context())
-	if err != nil {
-		h.renderError(w, err)
-		return
-	}
-	var view *hubView
-	for i := range views {
-		if views[i].Agent == agent && views[i].Deploy == deploy {
-			view = &views[i]
-		}
-	}
-	if view == nil {
-		h.render(w, http.StatusNotFound, "error", map[string]any{"Who": who, "Error": "No deploy " + deploy + " on " + agent})
-		return
-	}
-	events, err := h.store.events(r.Context(), agent, deploy, "", 100)
-	if err != nil {
-		h.renderError(w, err)
-		return
-	}
-	h.render(w, http.StatusOK, "deploy", map[string]any{"Who": who, "D": view, "Events": events})
-}
-
-func (h *hubServer) renderError(w http.ResponseWriter, err error) {
-	log.Printf("hub: %v", err)
-	h.render(w, http.StatusServiceUnavailable, "error", map[string]any{"Error": "The database is not answering: " + err.Error()})
-}
-
-func (h *hubServer) render(w http.ResponseWriter, code int, page string, data map[string]any) {
-	data["Version"] = version
-	data["Page"] = page
-	data["Now"] = time.Now()
-	data["Auth"] = h.opts.uiToken != ""
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
-	w.WriteHeader(code)
-	if err := hubTemplates.ExecuteTemplate(w, page, data); err != nil {
-		log.Printf("hub: template %s: %v", page, err)
-	}
 }
 
 // --- JSON API --------------------------------------------------------------------------------------------

@@ -26,3 +26,16 @@ http://{{ include "hub.fullname" . }}-sqld:8080
 {{- required "set externalDatabase.url or sqld.enabled=true" .Values.externalDatabase.url -}}
 {{- end -}}
 {{- end -}}
+
+{{/* The Secret with the hub's serving certificate, or "" when the hub serves plain HTTP. */}}
+{{- define "hub.tlsSecret" -}}
+{{- if .Values.hub.tls.existingSecret -}}
+{{ .Values.hub.tls.existingSecret }}
+{{- else if .Values.hub.tls.certificate.enabled -}}
+{{ include "hub.fullname" . }}-tls
+{{- end -}}
+{{- end }}
+
+{{- define "hub.caOnVolume" -}}
+{{- if and .Values.hub.agentCA.enabled (not .Values.hub.agentCA.existingSecret) }}true{{ end -}}
+{{- end }}

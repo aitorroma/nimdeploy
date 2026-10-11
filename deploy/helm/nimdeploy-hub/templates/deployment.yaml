@@ -6,6 +6,9 @@ metadata:
     app.kubernetes.io/component: hub
 spec:
   replicas: 1
+  {{- if include "hub.caOnVolume" . }}
+  strategy: {type: Recreate}   # the CA volume is ReadWriteOnce
+  {{- end }}
   selector:
     matchLabels: {{- include "hub.selector" . | nindent 6 }}
       app.kubernetes.io/component: hub
@@ -35,7 +38,7 @@ spec:
               value: {{ .Values.hub.retainDays | quote }}
             - name: NIMDEPLOY_HUB_LOG_FORMAT
               value: {{ .Values.hub.logFormat | quote }}
-            {{- with .Values.hub.tls.existingSecret }}
+            {{- if include "hub.tlsSecret" . }}
             - name: NIMDEPLOY_HUB_TLS_CERT
               value: /tls/server/tls.crt
             - name: NIMDEPLOY_HUB_TLS_KEY
@@ -46,6 +49,10 @@ spec:
               value: /tls/clients/ca.crt
             - name: NIMDEPLOY_HUB_AGENT_CERTS
               value: {{ .Values.hub.tls.agentCerts | quote }}
+            {{- end }}
+            {{- if .Values.hub.agentCA.enabled }}
+            - name: NIMDEPLOY_HUB_AGENT_CA_DIR
+              value: /ca
             {{- end }}
             {{- with .Values.hub.trustedHeader }}
             - name: NIMDEPLOY_HUB_TRUSTED_HEADER
@@ -64,7 +71,8 @@ spec:
             {{- end }}
           ports:
             - {name: http, containerPort: 9100}
-          {{- $scheme := ternary "HTTPS" "HTTP" (not (empty .Values.hub.tls.existingSecret)) }}
+          {{- $tls := include "hub.tlsSecret" . }}
+          {{- $scheme := ternary "HTTPS" "HTTP" (not (empty $tls)) }}
           startupProbe:
             httpGet: {path: /healthz, port: http, scheme: {{ $scheme }}}
             periodSeconds: 5
@@ -76,26 +84,36 @@ spec:
           readinessProbe:
             httpGet: {path: /healthz, port: http, scheme: {{ $scheme }}}
             periodSeconds: 10
-          {{- if or .Values.hub.tls.existingSecret .Values.hub.tls.clientCASecret }}
+          {{- if or $tls .Values.hub.tls.clientCASecret .Values.hub.agentCA.enabled }}
           volumeMounts:
-            {{- if .Values.hub.tls.existingSecret }}
+            {{- if $tls }}
             - {name: tls-server, mountPath: /tls/server, readOnly: true}
             {{- end }}
             {{- if .Values.hub.tls.clientCASecret }}
             - {name: tls-clients, mountPath: /tls/clients, readOnly: true}
             {{- end }}
+            {{- if .Values.hub.agentCA.enabled }}
+            - {name: agent-ca, mountPath: /ca, readOnly: {{ not (include "hub.caOnVolume" .) }}}
+            {{- end }}
           {{- end }}
           securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
           resources: {{- toYaml .Values.hub.resources | nindent 12 }}
-      {{- if or .Values.hub.tls.existingSecret .Values.hub.tls.clientCASecret }}
+      {{- if or $tls .Values.hub.tls.clientCASecret .Values.hub.agentCA.enabled }}
       volumes:
-        {{- with .Values.hub.tls.existingSecret }}
+        {{- if $tls }}
         - name: tls-server
-          secret: {secretName: {{ . }}}
+          secret: {secretName: {{ $tls }}}
         {{- end }}
         {{- with .Values.hub.tls.clientCASecret }}
         - name: tls-clients
           secret: {secretName: {{ . }}}
+        {{- end }}
+        {{- if .Values.hub.agentCA.existingSecret }}
+        - name: agent-ca
+          secret: {secretName: {{ .Values.hub.agentCA.existingSecret }}, defaultMode: 0440}
+        {{- else if .Values.hub.agentCA.enabled }}
+        - name: agent-ca
+          persistentVolumeClaim: {claimName: {{ include "hub.fullname" . }}-ca}
         {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}

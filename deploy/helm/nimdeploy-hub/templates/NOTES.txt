@@ -6,9 +6,19 @@ Dashboard token:
 Create an agent (one per server) and copy its token into that server's secrets.env:
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "hub.fullname" . }} -- nimdeploy hub agent add <name>
 
-{{- if .Values.ingress.enabled }}
+{{- if .Values.ingressRouteTCP.enabled }}
+Agents send to: https://{{ .Values.ingressRouteTCP.host }} (TLS passthrough: the hub sees client certificates)
+{{- else if .Values.ingress.enabled }}
 Agents send to: https://{{ .Values.ingress.host }}
 {{- else }}
 No Ingress: try it with
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "hub.fullname" . }} 9100:{{ .Values.service.port }}
+{{- end }}
+{{- if .Values.hub.agentCA.enabled }}
+
+Agent certificates: add agents from the dashboard and turn on "Require a client
+certificate". The CA lives in {{ .Values.hub.agentCA.existingSecret | default (printf "the PVC %s-ca" (include "hub.fullname" .)) }}; back it up.
+{{- if and .Values.ingress.enabled (not .Values.ingressRouteTCP.enabled) }}
+Warning: a regular Ingress terminates TLS, so the hub never sees client certificates. Use ingressRouteTCP.
+{{- end }}
 {{- end }}

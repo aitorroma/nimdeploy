@@ -65,6 +65,7 @@ type Trigger struct {
 	Ref        string
 	Branch     string
 	Commit     string
+	Message    string // first line of the commit message, when known
 	Pusher     string
 	// Params are the values captured from the webhook (or given to a manual run).
 	Params []Param
@@ -96,6 +97,7 @@ type State struct {
 	Repository string            `json:"repository,omitempty"`
 	Branch     string            `json:"branch,omitempty"`
 	Commit     string            `json:"commit,omitempty"`
+	Message    string            `json:"message,omitempty"` // commit title
 	Pusher     string            `json:"pusher,omitempty"`
 	Event      string            `json:"event,omitempty"`
 	ResourceID string            `json:"resource_id,omitempty"`
@@ -104,9 +106,11 @@ type State struct {
 	ExitCode   *int              `json:"exit_code,omitempty"`
 	// Ansible is the PLAY RECAP of an [ansible] deploy.
 	Ansible *AnsibleSummary `json:"ansible,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Log     string          `json:"log,omitempty"`
-	Queued  *QueuedInfo     `json:"queued,omitempty"`
+	// Phases are the parts of the run and how long each took.
+	Phases []PhaseTiming `json:"phases,omitempty"`
+	Error  string        `json:"error,omitempty"`
+	Log    string        `json:"log,omitempty"`
+	Queued *QueuedInfo   `json:"queued,omitempty"`
 	// NextRun is the next scheduled run (deploys with a schedule).
 	NextRun *time.Time `json:"next_run,omitempty"`
 }
@@ -357,6 +361,7 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 		Repository: t.Repository,
 		Branch:     t.Branch,
 		Commit:     t.Commit,
+		Message:    t.Message,
 		Pusher:     t.Pusher,
 		Event:      t.Event,
 		ResourceID: t.ResourceID,
@@ -465,6 +470,10 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	status, errMsg := StatusSuccess, ""
 	var exitCode *int
 	var ansibleSum *AnsibleSummary
+	pl := &phaseLog{origin: firstTime(t.queuedAt, start)}
+	if !t.queuedAt.IsZero() && start.Sub(t.queuedAt) > 10*time.Millisecond {
+		pl.add("queue.wait", t.queuedAt, start.Sub(t.queuedAt), false)
+	}
 	superseded := false
 	cmdStart := start
 	proceed := true
@@ -474,6 +483,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 		ciSpan := sp.child("ci.wait", spanInternal)
 		ok, reason, sup := r.waitForCI(d, t, notifier, logf)
 		r.metrics.phase(d.Name, "ci", time.Since(ciStart))
+		pl.add("ci", ciStart, time.Since(ciStart), !ok)
 		if !ok {
 			ciSpan.fail(reason)
 		}
@@ -490,7 +500,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 	if proceed {
 		notifier.CommitStatus(d, t, "pending", "Deploying")
-		status, exitCode, errMsg, ansibleSum = r.withHooks(d, t, env, f, path, logf, cf, sp)
+		status, exitCode, errMsg, ansibleSum = r.withHooks(d, t, env, f, path, logf, cf, sp, pl)
 	}
 
 	emailSpan := sp.child("email", spanClient)
@@ -550,6 +560,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	st.ExitCode = exitCode
 	st.Error = errMsg
 	st.Ansible = ansibleSum
+	st.Phases = pl.list
 	recovered := false
 	if status != StatusSkipped {
 		// A skipped deploy changed nothing, so it neither breaks nor fixes.
@@ -587,8 +598,20 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 }
 
 // withHooks runs before, the command, the health check and the after hooks.
-func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File, logPath string, logf func(string, ...any), cf CloudflareConfig, sp *span) (status string, exitCode *int, errMsg string, sum *AnsibleSummary) {
-	phase := func(name string, start time.Time) { r.metrics.phase(d.Name, name, time.Since(start)) }
+func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File, logPath string, logf func(string, ...any), cf CloudflareConfig, sp *span, pl *phaseLog) (status string, exitCode *int, errMsg string, sum *AnsibleSummary) {
+	cmdName := "command" // the phase's name in the hub; the metric keeps "command"
+	if d.Ansible != nil {
+		cmdName = d.Ansible.Binary
+	}
+	phase := func(name string, start time.Time, failed bool) {
+		took := time.Since(start)
+		metric := name
+		if name == cmdName {
+			metric = "command"
+		}
+		r.metrics.phase(d.Name, metric, took)
+		pl.add(name, start, took, failed)
+	}
 	// withTrace gives a command the TRACEPARENT of its own span.
 	withTrace := func(s *span) []string {
 		if tp := s.traceparent(); tp != "" {
@@ -599,10 +622,11 @@ func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File,
 	hook := func(name, script string) (string, string) {
 		fmt.Fprintln(f)
 		logf("hook=%s", name)
-		defer phase(name, time.Now())
+		hookStart := time.Now()
 		hs := sp.child("hook "+name, spanInternal)
 		defer hs.End()
 		st, _, msg := r.runCmd(d, withTrace(hs), f, "/bin/bash", []string{"-eo", "pipefail", "-c", script})
+		phase(name, hookStart, st != StatusSuccess)
 		if st != StatusSuccess {
 			hs.fail(msg)
 		}
@@ -638,7 +662,7 @@ func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File,
 		status, exitCode, errMsg = r.execute(d, withTrace(cs), f)
 		endCommandSpan(cs, status, exitCode, errMsg)
 	}
-	phase("command", cmdStart)
+	phase(cmdName, cmdStart, status != StatusSuccess)
 	if status == StatusSuccess && d.HealthURL != "" {
 		healthStart := time.Now()
 		hs := sp.child("health_check", spanClient)
@@ -648,18 +672,21 @@ func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File,
 			hs.fail(err.Error())
 		}
 		hs.End()
-		phase("health", healthStart)
+		phase("health", healthStart, status != StatusSuccess)
 	}
 	if status == StatusSuccess {
 		if d.CloudflareZoneID != "" {
-			defer phase("cloudflare", time.Now())
+			cfStart := time.Now()
 			cfs := sp.child("cloudflare.purge", spanClient)
-			defer cfs.End()
-			if err := purgeCloudflare(r.ctx, cf, d.CloudflareZoneID, d.CloudflarePurge); err != nil {
+			err := purgeCloudflare(r.ctx, cf, d.CloudflareZoneID, d.CloudflarePurge)
+			if err != nil {
 				logf("cloudflare: purge failed: %v", err) // the deploy itself worked
+				cfs.fail(err.Error())
 			} else {
 				logf("cloudflare: purged %s", strings.Join(d.CloudflarePurge, ", "))
 			}
+			cfs.End()
+			phase("cloudflare", cfStart, err != nil)
 		}
 		if d.AfterSuccess != "" {
 			hook("after_success", d.AfterSuccess) // logged; the deploy already succeeded
@@ -1245,4 +1272,26 @@ func endDeploySpan(s *span, st State, at time.Time) {
 		s.fail(st.Error)
 	}
 	s.endAt(at)
+}
+
+// PhaseTiming is one part of a run: when it started (from the request) and
+// how long it took.
+type PhaseTiming struct {
+	Name       string `json:"name"`
+	StartMS    int64  `json:"start_ms"`
+	DurationMS int64  `json:"duration_ms"`
+	Failed     bool   `json:"failed,omitempty"`
+}
+
+// phaseLog collects a run's phases; only its own goroutine writes it.
+type phaseLog struct {
+	origin time.Time
+	list   []PhaseTiming
+}
+
+func (p *phaseLog) add(name string, start time.Time, took time.Duration, failed bool) {
+	if p == nil || len(p.list) >= 32 {
+		return
+	}
+	p.list = append(p.list, PhaseTiming{Name: name, StartMS: start.Sub(p.origin).Milliseconds(), DurationMS: took.Milliseconds(), Failed: failed})
 }

@@ -46,6 +46,9 @@ const (
 	hubEventDeployDone  = "deploy.finished"
 	hubEventRejected    = "deploy.rejected"
 	hubEventHeartbeat   = "heartbeat"
+	// hubEventCommandRefused: the agent could not run a hub command (unknown
+	// deploy, busy, commands off); its ID is the command's.
+	hubEventCommandRefused = "command.refused"
 )
 
 var agentNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -61,6 +64,9 @@ type HubConfig struct {
 	CAFile   string `toml:"ca_file"`
 	CertFile string `toml:"cert_file"`
 	KeyFile  string `toml:"key_file"`
+	// AcceptCommands lets the hub ask this server to run a deploy again or
+	// roll it back (the agent fetches the orders; the hub never connects).
+	AcceptCommands bool `toml:"accept_commands"`
 
 	token   string
 	logTail int
@@ -126,6 +132,8 @@ type hubInventory struct {
 	Outbox  int               `json:"outbox"` // events waiting to be sent
 	// HeartbeatS is the agent's heartbeat interval, so the hub knows when it's late.
 	HeartbeatS int64 `json:"heartbeat_s"`
+	// AcceptsCommands: the agent runs deploys and rollbacks the hub asks for.
+	AcceptsCommands bool `json:"accepts_commands,omitempty"`
 }
 
 type hubDeploy struct {
@@ -161,10 +169,14 @@ type hubAgent struct {
 	wake    chan struct{}
 	stop    chan struct{}
 	done    chan struct{}
+	cmdDone chan struct{}
 
-	mu      sync.Mutex
-	cfg     HubConfig
-	failing bool
+	mu         sync.Mutex
+	cfg        HubConfig
+	failing    bool
+	pollClient *http.Client
+	cmdFailing bool
+	cmdSeen    *deliveryCache
 }
 
 func newHubAgent(r *Runner, cfg HubConfig, logDir string) *hubAgent {
@@ -172,13 +184,14 @@ func newHubAgent(r *Runner, cfg HubConfig, logDir string) *hubAgent {
 	a := &hubAgent{
 		runner: r, dir: filepath.Join(logDir, hubOutboxDir), host: host, started: time.Now(),
 		client: hubClient(cfg),
-		wake:   make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
+		wake:   make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}), cmdDone: make(chan struct{}),
 		cfg: cfg,
 	}
 	if err := os.MkdirAll(a.dir, 0o700); err != nil {
 		log.Printf("hub: cannot create outbox %s: %v", a.dir, err)
 	}
 	go a.loop()
+	go a.commandLoop()
 	return a
 }
 
@@ -197,6 +210,7 @@ func (a *hubAgent) setConfig(cfg HubConfig) {
 	a.mu.Lock()
 	if cfg.CAFile != a.cfg.CAFile || cfg.CertFile != a.cfg.CertFile || cfg.KeyFile != a.cfg.KeyFile {
 		a.client = hubClient(cfg)
+		a.pollClient = nil
 	}
 	a.cfg = cfg
 	a.mu.Unlock()
@@ -206,6 +220,18 @@ func (a *hubAgent) httpClient() *http.Client {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.client
+}
+
+// longPollClient is the client for the commands long poll (a longer timeout).
+func (a *hubAgent) longPollClient() *http.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pollClient == nil {
+		c := *a.client
+		c.Timeout = hubCommandLongPoll
+		a.pollClient = &c
+	}
+	return a.pollClient
 }
 
 func (a *hubAgent) config() HubConfig {
@@ -220,7 +246,9 @@ func (a *hubAgent) emit(ev hubEvent) {
 		return
 	}
 	cfg := a.config()
-	ev.ID = newDeliveryID()
+	if ev.ID == "" {
+		ev.ID = newDeliveryID()
+	}
 	ev.Time = time.Now().UTC()
 	ev.Agent, ev.Host, ev.Version = cfg.Agent, a.host, version
 	b, err := json.Marshal(ev)
@@ -229,7 +257,8 @@ func (a *hubAgent) emit(ev hubEvent) {
 	}
 	name := fmt.Sprintf("%020d-%s.json", ev.Time.UnixNano(), ev.ID[:8])
 	tmp := filepath.Join(a.dir, "."+name)
-	if err := os.WriteFile(tmp, b, 0o600); err == nil {
+	err = os.WriteFile(tmp, b, 0o600)
+	if err == nil {
 		err = os.Rename(tmp, filepath.Join(a.dir, name))
 	}
 	if err != nil {
@@ -424,6 +453,7 @@ func (a *hubAgent) shutdown() {
 		close(a.stop)
 	}
 	<-a.done
+	<-a.cmdDone
 }
 
 // hubInventory describes every configured deploy and its current state.
@@ -431,7 +461,7 @@ func (r *Runner) hubInventory() hubInventory {
 	r.mu.Lock()
 	cfg := r.cfg
 	r.mu.Unlock()
-	inv := hubInventory{Labels: copyLabels(cfg.Labels)}
+	inv := hubInventory{Labels: copyLabels(cfg.Labels), AcceptsCommands: cfg.Hub.AcceptCommands}
 	g := r.gauges(cfg.DeployNames())
 	for _, name := range cfg.DeployNames() {
 		d := cfg.Deploy[name]

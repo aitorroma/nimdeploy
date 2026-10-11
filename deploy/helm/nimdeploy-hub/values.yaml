@@ -21,6 +21,21 @@ hub:
     existingSecret: ""   # kubernetes.io/tls Secret (tls.crt, tls.key)
     clientCASecret: ""   # Secret with ca.crt: the agents' CA
     agentCerts: optional # or require: each agent's certificate must carry its name
+    # Have cert-manager issue tls.existingSecret (it is created with that name,
+    # or <fullname>-tls when empty). Needed with TLS passthrough, where the
+    # ingress controller can't serve the certificate itself.
+    certificate:
+      enabled: false
+      issuerRef: {name: letsencrypt-prod, kind: ClusterIssuer}
+  # The hub's own CA, which signs agent certificates from the dashboard
+  # ("Require a client certificate" when adding an agent). Needs hub TLS.
+  # Kept in a volume, or read from existingSecret (keys ca.pem and ca.key).
+  agentCA:
+    enabled: false
+    existingSecret: ""
+    persistence:
+      size: 16Mi
+      storageClass: ""
   extraEnv: []
   resources:
     requests: {cpu: 20m, memory: 32Mi}
@@ -50,6 +65,13 @@ service:
   type: ClusterIP
   port: 9100
 
+# Traefik IngressRouteTCP with TLS passthrough: the hub terminates TLS and
+# sees the agents' client certificates. Use it instead of ingress for mTLS.
+ingressRouteTCP:
+  enabled: false
+  host: hub.example.com
+  entryPoints: [websecure]
+
 ingress:
   enabled: false
   className: ""
@@ -70,6 +92,7 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
   runAsGroup: 65532
+  fsGroup: 65532
   seccompProfile: {type: RuntimeDefault}
 securityContext:
   allowPrivilegeEscalation: false

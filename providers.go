@@ -50,6 +50,7 @@ type pushInfo struct {
 	Ref     string
 	Commit  string
 	Deleted bool
+	Message string // the head commit's message, when the provider sends it
 }
 
 // --- authentication -----------------------------------------------------------
@@ -108,12 +109,15 @@ func parseGitHub(r *http.Request, body []byte) (hookEvent, error) {
 		Pusher struct {
 			Name string `json:"name"`
 		} `json:"pusher"`
+		HeadCommit struct {
+			Message string `json:"message"`
+		} `json:"head_commit"`
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
 		return ev, err
 	}
 	ev.Repository, ev.Pusher = p.Repository.FullName, p.Pusher.Name
-	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: p.Deleted || zeroSHA(p.After)}}
+	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: p.Deleted || zeroSHA(p.After), Message: p.HeadCommit.Message}}
 	return ev, nil
 }
 
@@ -137,13 +141,16 @@ func parseGitea(r *http.Request, body []byte) (hookEvent, error) {
 			Login    string `json:"login"`
 			Username string `json:"username"`
 		} `json:"pusher"`
+		HeadCommit struct {
+			Message string `json:"message"`
+		} `json:"head_commit"`
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
 		return ev, err
 	}
 	ev.Repository = p.Repository.FullName
 	ev.Pusher = firstNonEmpty(p.Pusher.Login, p.Pusher.Username)
-	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: zeroSHA(p.After)}}
+	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: zeroSHA(p.After), Message: p.HeadCommit.Message}}
 	return ev, nil
 }
 
@@ -163,6 +170,10 @@ func parseGitLab(r *http.Request, body []byte) (hookEvent, error) {
 		Project      struct {
 			PathWithNamespace string `json:"path_with_namespace"`
 		} `json:"project"`
+		Commits []struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		} `json:"commits"`
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
 		if ev.Name == "Push Hook" {
@@ -181,7 +192,13 @@ func parseGitLab(r *http.Request, body []byte) (hookEvent, error) {
 	}
 	ev.Repository = p.Project.PathWithNamespace
 	ev.Pusher = firstNonEmpty(p.UserUsername, p.UserName)
-	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: zeroSHA(p.After) || p.CheckoutSHA == nil}}
+	msg := ""
+	for _, c := range p.Commits {
+		if c.ID == p.After {
+			msg = c.Message
+		}
+	}
+	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: zeroSHA(p.After) || p.CheckoutSHA == nil, Message: msg}}
 	return ev, nil
 }
 
@@ -197,7 +214,8 @@ func parseBitbucket(r *http.Request, body []byte) (hookEvent, error) {
 			Type   string `json:"type"`
 			Name   string `json:"name"`
 			Target struct {
-				Hash string `json:"hash"`
+				Hash    string `json:"hash"`
+				Message string `json:"message"`
 			} `json:"target"`
 		}
 		var p struct {
@@ -224,7 +242,7 @@ func parseBitbucket(r *http.Request, body []byte) (hookEvent, error) {
 		for _, c := range p.Push.Changes {
 			switch {
 			case c.New != nil && c.New.Type == "branch":
-				ev.Pushes = append(ev.Pushes, pushInfo{Ref: "refs/heads/" + c.New.Name, Commit: c.New.Target.Hash})
+				ev.Pushes = append(ev.Pushes, pushInfo{Ref: "refs/heads/" + c.New.Name, Commit: c.New.Target.Hash, Message: c.New.Target.Message})
 			case c.New == nil && c.Old != nil && c.Old.Type == "branch":
 				ev.Pushes = append(ev.Pushes, pushInfo{Ref: "refs/heads/" + c.Old.Name, Deleted: true})
 			}
