@@ -1,3 +1,41 @@
+/* Brand: the NimDeploy mark (navy and blue) on a white header; navy header in dark mode. */
+:root {
+  --nd-navy: #0a1730;
+  --nd-blue: #1f5bff;
+}
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #ffffff;
+  --md-primary-fg-color--light: #f3f6fc;
+  --md-primary-fg-color--dark: #e6ebf5;
+  --md-primary-bg-color: var(--nd-navy);
+  --md-primary-bg-color--light: #4a5873;
+  --md-accent-fg-color: var(--nd-blue);
+  --md-accent-fg-color--transparent: rgba(31, 91, 255, .1);
+  --md-typeset-a-color: #0b4fe0;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0d1a33;
+  --md-primary-fg-color--light: #16264a;
+  --md-primary-fg-color--dark: #08122a;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #b8c4dc;
+  --md-accent-fg-color: #5b8cff;
+  --md-accent-fg-color--transparent: rgba(91, 140, 255, .12);
+  --md-typeset-a-color: #7aa2ff;
+}
+[data-md-color-scheme="default"] .md-header { box-shadow: 0 1px 0 #e3e8f2; }
+[data-md-color-scheme="default"] .md-tabs { border-bottom: 1px solid #e3e8f2; }
+.md-header__button.md-logo svg, .md-nav__button.md-logo svg { height: 1.6rem; width: auto; }
+[data-md-color-scheme="slate"] .nd-bar { fill: #c9d4ec; }
+.md-header__topic:first-child { font-weight: 700; letter-spacing: -.01em; }
+/* The primary color is the header's (white or navy): buttons and search take the brand blue instead. */
+.md-typeset .md-button { color: var(--md-accent-fg-color); border-color: var(--md-accent-fg-color); }
+.md-typeset .md-button--primary { background: var(--nd-blue); border-color: var(--nd-blue); color: #fff; }
+.md-typeset .md-button:focus, .md-typeset .md-button:hover { background: var(--nd-navy); border-color: var(--nd-navy); color: #fff; }
+[data-md-color-scheme="default"] .md-search__form { background: #eef2f9; }
+[data-md-color-scheme="default"] .md-search__form:hover { background: #e3e9f5; }
+[data-md-color-scheme="default"] .md-search__input::placeholder, [data-md-color-scheme="default"] .md-search__icon { color: #4a5873; }
+
 .md-typeset .hero { padding: 1.2rem 0 0.4rem; }
 .md-typeset .hero h1 { font-weight: 700; margin-bottom: 0.4rem; }
 .md-typeset .hero p.tagline { font-size: 1.15rem; opacity: 0.85; margin-top: 0; }

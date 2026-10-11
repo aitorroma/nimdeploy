@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 280">
+  <defs>
+    <linearGradient id="nd-slab" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0057e6"/><stop offset=".55" stop-color="#1f5bff"/><stop offset="1" stop-color="#071a3d"/>
+    </linearGradient>
+    <linearGradient id="nd-arrow" x1="0" y1="0" x2=".6" y2="1">
+      <stop offset="0" stop-color="#0a8bff"/><stop offset="1" stop-color="#0038ff"/>
+    </linearGradient>
+  </defs>
+  <path class="nd-bar" fill="#0a1730" d="M2 75h75v190a8 8 0 0 1-8 8H40A38 38 0 0 1 2 235z"/>
+  <path fill="url(#nd-slab)" d="M2 38A30 30 0 0 1 48 13L198 115a40 40 0 0 1 25 37V246L2 85z"/>
+  <path fill="url(#nd-arrow)" d="M147 14a12 12 0 0 1 19-10L303 93C338 116 345 165 318 186L242 252V172a42 42 0 0 0-18-36L147 84z"/>
+</svg>

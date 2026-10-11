@@ -9,23 +9,24 @@ copyright: nimdeploy is MIT licensed · a <a href="https://nimbox360.com">Nimbox
 
 theme:
   name: material
+  custom_dir: overrides
   language: en
   icon:
-    logo: material/rocket-launch-outline
+    logo: nimdeploy/mark
     repo: fontawesome/brands/github
   favicon: assets/favicon.svg
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Light mode
