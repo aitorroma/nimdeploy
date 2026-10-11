@@ -140,9 +140,9 @@ h2 { font-size: 14.5px; font-weight: 600; letter-spacing: -0.005em; }
 .btn.danger { color: var(--bad); }
 .btn.small { padding: 3px 9px; font-size: 12px; border-radius: 7px; }
 .btn svg { width: 14px; height: 14px; }
-.view { padding: 26px 28px 56px; display: flex; flex-direction: column; gap: 22px; max-width: 1280px; width: 100%; }
+.view { padding: 26px 28px 56px; display: flex; flex-direction: column; gap: 22px; width: 100%; box-sizing: border-box; }
 .view-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-.view-head p { margin: 4px 0 0; color: var(--muted); }
+.view-head p { margin: 4px 0 0; color: var(--muted); max-width: 80ch; }
 .view-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 .seg { display: inline-flex; background: var(--sunk); border-radius: 9px; padding: 3px; gap: 2px; }
 .seg a { all: unset; cursor: pointer; padding: 4px 11px; border-radius: 7px; font-size: 12.5px; color: var(--muted); }
