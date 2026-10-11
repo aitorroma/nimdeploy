@@ -56,6 +56,7 @@
   });
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape") closeSoftly();
+    if (ev.key === "Enter" && ev.target.hasAttribute && ev.target.hasAttribute("data-filter")) ev.preventDefault();
     if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") { ev.preventDefault(); var q = document.getElementById("q"); if (q) q.focus(); }
     if (ev.key === "Enter" && ev.target.matches && ev.target.matches("[data-href]")) location.href = ev.target.dataset.href;
   });
@@ -66,22 +67,32 @@
     var slug = (c.value + "-" + e.value).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9_.]+/g, "-").replace(/^-+|-+$/g, "");
     n.value = c.value.trim() ? slug.slice(0, 64) : "";
   }
+  // A filter box hides the items of its list that don't contain the text.
+  function filterList(input) {
+    var q = input.value.trim().toLowerCase();
+    var box = input.closest(".pick, .narrow");
+    if (!box) return;
+    box.querySelectorAll("[data-item]").forEach(function (el) {
+      el.hidden = q !== "" && el.textContent.toLowerCase().indexOf(q) < 0;
+    });
+  }
   document.addEventListener("input", function (ev) {
-    if (ev.target.id === "q") filterTree();
+    if (ev.target.hasAttribute && ev.target.hasAttribute("data-filter")) filterList(ev.target);
+    else if (ev.target.id === "q") filterTree();
     else if (ev.target.id === "ag-name") ev.target.dataset.typed = ev.target.value ? "1" : "";
     else if (ev.target.id === "ag-client") suggestName();
   });
   // A notification destination shows only the fields of its type.
   function syncKinds() {
-    var k = document.getElementById("ch-kind");
+    var k = document.querySelector("#chForm input[name=kind]:checked");
     if (!k) return;
-    document.querySelectorAll("[data-kinds]").forEach(function (el) {
+    document.querySelectorAll("#chForm [data-kinds]").forEach(function (el) {
       el.hidden = el.dataset.kinds.split(" ").indexOf(k.value) < 0;
     });
   }
   document.addEventListener("change", function (ev) {
     if (ev.target.id === "ag-env") suggestName();
-    else if (ev.target.id === "ch-kind") syncKinds();
+    else if (ev.target.name === "kind" && ev.target.closest("#chForm")) syncKinds();
   });
   document.addEventListener("htmx:afterSwap", function (ev) {
     if (ev.detail.target && ev.detail.target.id === "drawer") {

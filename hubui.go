@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -121,6 +122,8 @@ var hubTemplates = template.Must(template.New("hub").Funcs(template.FuncMap{
 	"wait":     func(lang, name string) string { return hubT(lang, "new.wait", name) },
 	"bg":       func(c string) template.CSS { return template.CSS("background:" + c) },
 	"contains": strings.Contains,
+	"ver":      func() string { return url.QueryEscape(version) },
+	"dec":      func(n int) int { return n - 1 },
 	"group": func(lang, title, name string, opts []opt) map[string]any {
 		return map[string]any{"Lang": lang, "Title": title, "Name": name, "Opts": opts}
 	},
@@ -161,10 +164,10 @@ const hubHTML = `
 <html lang="{{.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"historyCacheSize":0}'>
 <title>{{block "title" .}}nimdeploy hub{{end}}</title>
-<link rel="stylesheet" href="/static/hub.css">
+<link rel="stylesheet" href="/static/hub.css?v={{ver}}">
 <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
-<script src="/static/htmx.min.js" defer></script>
-<script src="/static/hub.js" defer></script>
+<script src="/static/htmx.min.js?v={{ver}}" defer></script>
+<script src="/static/hub.js?v={{ver}}" defer></script>
 </head>{{end}}
 
 {{define "badge"}}<span class="badge s-{{.S}}">{{.L}}</span>{{end}}
@@ -418,46 +421,82 @@ systemctl --user restart nimdeploy</pre><button class="btn small" type="button" 
 
 {{define "checkgroup"}}<fieldset class="checks"><legend>{{t .Lang .Title}}</legend>{{range .Opts}}<label><input type="checkbox" name="{{$.Name}}" value="{{.Value}}" {{if .On}}checked{{end}}><span>{{.Label}}</span></label>{{else}}<span class="hint">—</span>{{end}}</fieldset>{{end}}
 
+{{define "picklist"}}{{$n := .Name}}<div class="pick">{{if gt (len .Opts) 8}}<input class="pick-filter" type="search" placeholder="{{t .Lang "nf.filter"}}" data-filter autocomplete="off">{{end}}
+  <div class="pick-list">{{range .Opts}}<label data-item><input type="checkbox" name="{{$n}}" value="{{.Value}}" {{if .On}}checked{{end}}><span>{{.Label}}</span></label>{{else}}<span class="hint">{{t $.Lang "nf.nothing_here"}}</span>{{end}}</div>
+  <p class="hint" style="margin:0">{{t .Lang .Title}}</p></div>{{end}}
+
 {{define "drawer-rule"}}{{$l := .Lang}}<div class="drawer-head" data-keep><h2>{{if .ID}}{{t $l "nf.rule_edit"}}{{else}}{{t $l "nf.rule_new"}}{{end}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
-<form class="drawer-body" id="ruleForm" hx-post="/ui/notify/rules" hx-target="#drawer" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
-  <input type="hidden" name="id" value="{{.ID}}">
+<form class="drawer-body" id="ruleForm" hx-post="/ui/notify/rules" hx-target="#drawer" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}' autocomplete="off">
+  <button type="submit" name="go" value="{{if lt .Step 5}}{{inc .Step}}{{else}}save{{end}}" class="sr-only" tabindex="-1" aria-hidden="true"></button>
+  <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="step" value="{{.Step}}">
+  {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+  <div class="wsteps">{{range .Steps}}<button type="submit" name="go" value="{{.N}}" class="{{if .On}}on{{end}}{{if .Done}} done{{end}}"><i>{{.N}}</i><span>{{.Label}}</span></button>{{end}}</div>
   {{if .Error}}<div class="note" style="background:var(--bad-soft)">{{.Error}}</div>{{end}}
-  <div class="field"><label for="ru-name">{{t $l "nf.name"}}</label><input id="ru-name" name="name" value="{{.Name}}" maxlength="100" placeholder="{{t $l "nf.name_ph"}}"></div>
-  {{template "checkgroup" (group $l "nf.events" "event" .Events)}}
-  <div class="field"><span class="lab">{{t $l "nf.filters"}}</span><span class="hint">{{t $l "nf.filters_hint"}}</span></div>
-  {{template "checkgroup" (group $l "nf.f_clients" "client" .Clients)}}
-  {{template "checkgroup" (group $l "nf.f_envs" "env" .Envs)}}
-  {{template "checkgroup" (group $l "nf.f_agents" "agent" .Agents)}}
-  {{template "checkgroup" (group $l "nf.f_deploys" "deploy" .Deploys)}}
+  {{if eq .Step 1}}
+  <div class="wq"><h3>{{t $l "nf.q1"}}</h3></div>
+  {{template "picklist" (group $l "nf.all_clients" "client" .Clients)}}
+  {{else if eq .Step 2}}
+  <div class="wq"><h3>{{t $l "nf.q2"}}</h3><p class="hint">{{t $l "nf.q2_hint"}}</p></div>
+  {{template "picklist" (group $l "nf.all_envs" "env" .Envs)}}
+  {{else if eq .Step 3}}
+  <div class="wq"><h3>{{t $l "nf.q3"}}</h3></div>
+  <div class="kcards">{{range .Kinds}}<label class="kcard"><input type="checkbox" name="kind" value="{{.Value}}" {{if .On}}checked{{end}}><span><b>{{.Label}}</b><small>{{t $l (print "nf.kind_" .Value "_d")}}</small></span></label>{{end}}</div>
+  <details class="narrow" {{if .Narrowed}}open{{end}}><summary>{{t $l "nf.narrow"}}</summary>
+    <p class="hint">{{t $l "nf.narrow_hint"}}</p>
+    {{if gt (len .Groups) 3}}<input class="pick-filter" type="search" placeholder="{{t $l "nf.filter"}}" data-filter autocomplete="off">{{end}}
+    <div class="jgroups">{{range .Groups}}<div class="jgroup" data-item>
+      <label class="jagent"><input type="checkbox" name="agent" value="{{.Agent}}" {{if .On}}checked{{end}}><b>{{.Agent}}</b><span class="muted">{{.Where}}</span></label>
+      <div class="jobs">{{range .Jobs}}<label><input type="checkbox" name="deploy" value="{{.Value}}" {{if .On}}checked{{end}}><span class="jname">{{.Name}}</span><span class="jkind {{.Kind}}">{{.KindLabel}}</span>{{if .Detail}}<span class="mono muted jdetail">{{.Detail}}</span>{{end}}</label>{{end}}</div>
+    </div>{{else}}<span class="hint">{{t $l "nf.nothing_here"}}</span>{{end}}</div>
+  </details>
+  {{else if eq .Step 4}}
+  <div class="wq"><h3>{{t $l "nf.q4"}}</h3></div>
+  {{template "checkgroup" (group $l "nf.ev_runs" "event" .RunEvents)}}
+  {{template "checkgroup" (group $l "nf.ev_servers" "event" .ServerEvents)}}
+  {{else}}
+  <div class="wq"><h3>{{t $l "nf.q5"}}</h3></div>
   {{if .Channels}}{{template "checkgroup" (group $l "nf.dests" "channel" .Channels)}}{{else}}<div class="note">{{t $l "nf.dests_none"}}</div>{{end}}
+  <div class="field"><label for="ru-name">{{t $l "nf.name"}}</label><input id="ru-name" name="name" value="{{.Name}}" maxlength="100" placeholder="{{.NamePH}}"><span class="hint">{{t $l "nf.name_hint"}}</span></div>
   <div class="row2"><div class="field"><label for="ru-lang">{{t $l "nf.lang"}}</label><select id="ru-lang" name="lang"><option value="en" {{if eq .RuleLang "en"}}selected{{end}}>English</option><option value="es" {{if eq .RuleLang "es"}}selected{{end}}>Español</option></select></div>
   <label class="toggle" for="ru-on"><span class="tt">{{t $l "nf.enabled"}}</span><input type="checkbox" id="ru-on" name="enabled" {{if .Enabled}}checked{{end}}><span class="sw"></span></label></div>
+  <div class="wsummary"><b>{{t $l "nf.summary"}}</b><ul>{{range .Summary}}<li>{{.}}</li>{{end}}</ul></div>
+  {{end}}
 </form>
-<div class="drawer-foot"><button class="btn" type="button" data-close>{{t $l "new.cancel"}}</button><button class="btn primary" type="submit" form="ruleForm">{{t $l "nf.save"}}</button></div>{{end}}
+<div class="drawer-foot">{{if gt .Step 1}}<button class="btn" type="submit" form="ruleForm" name="go" value="{{dec .Step}}">← {{t $l "nf.back"}}</button>{{end}}<span style="flex:1"></span>
+  <button class="btn" type="button" data-close>{{t $l "new.cancel"}}</button>
+  {{if lt .Step 5}}<button class="btn primary" type="submit" form="ruleForm" name="go" value="{{inc .Step}}">{{t $l "nf.next"}} →</button>{{else}}<button class="btn primary" type="submit" form="ruleForm" name="go" value="save">{{t $l "nf.save"}}</button>{{end}}</div>{{end}}
 
-{{define "drawer-channel"}}{{$l := .Lang}}<div class="drawer-head" data-keep><h2>{{if .ID}}{{t $l "nf.ch_edit"}}{{else}}{{t $l "nf.ch_new"}}{{end}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
+{{define "drawer-channel"}}{{$l := .Lang}}{{$k := .Kind}}<div class="drawer-head" data-keep><h2>{{if .ID}}{{t $l "nf.ch_edit"}}{{else}}{{t $l "nf.ch_new"}}{{end}}</h2><button class="btn small x" type="button" data-close>{{t $l "new.close"}}</button></div>
 <form class="drawer-body" id="chForm" hx-post="/ui/notify/channels" hx-target="#drawer" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}' autocomplete="off">
   <input type="hidden" name="id" value="{{.ID}}">
   {{if .Error}}<div class="note" style="background:var(--bad-soft)">{{.Error}}</div>{{end}}
-  <div class="row2"><div class="field"><label for="ch-name">{{t $l "nf.name"}}</label><input id="ch-name" name="name" value="{{.Name}}" maxlength="100" placeholder="{{t $l "nf.ch_name_ph"}}"></div>
-  <div class="field"><label for="ch-kind">{{t $l "nf.kind"}}</label><select id="ch-kind" name="kind">{{range .Kinds}}<option value="{{.Value}}" {{if .On}}selected{{end}}>{{.Label}}</option>{{end}}</select></div></div>
-  <div class="field" data-kinds="slack discord webhook"><label for="ch-url">URL</label><input id="ch-url" name="url" type="url" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{else}}https://hooks.slack.com/services/…{{end}}"><span class="hint">{{t $l "nf.url_hint"}}</span></div>
-  <div class="row2" data-kinds="telegram"><div class="field"><label for="ch-bot">{{t $l "nf.bot_token"}}</label><input id="ch-bot" name="bot_token" type="password" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{else}}123456:ABC…{{end}}"></div>
-  <div class="field"><label for="ch-chat">{{t $l "nf.chat_id"}}</label><input id="ch-chat" name="chat_id" value="{{.Config.ChatID}}" placeholder="-1001234567890"></div></div>
-  <div class="row2" data-kinds="email"><div class="field"><label for="ch-host">{{t $l "nf.smtp_host"}}</label><input id="ch-host" name="smtp_host" value="{{.Config.SMTPHost}}" placeholder="smtp.example.com"></div>
-  <div class="field"><label for="ch-port">{{t $l "nf.smtp_port"}}</label><input id="ch-port" name="smtp_port" inputmode="numeric" value="{{if .Config.SMTPPort}}{{.Config.SMTPPort}}{{end}}" placeholder="587"></div></div>
-  <div class="row2" data-kinds="email"><div class="field"><label for="ch-tls">{{t $l "nf.smtp_tls"}}</label><select id="ch-tls" name="smtp_tls"><option value="starttls" {{if eq .Config.SMTPTLS "starttls"}}selected{{end}}>STARTTLS (587)</option><option value="tls" {{if eq .Config.SMTPTLS "tls"}}selected{{end}}>TLS (465)</option><option value="none" {{if eq .Config.SMTPTLS "none"}}selected{{end}}>{{t $l "nf.smtp_none"}}</option></select></div>
-  <div class="field"><label for="ch-user">{{t $l "nf.smtp_user"}}</label><input id="ch-user" name="smtp_user" value="{{.Config.SMTPUser}}"></div></div>
-  <div class="row2" data-kinds="email"><div class="field"><label for="ch-pass">{{t $l "nf.smtp_pass"}}</label><input id="ch-pass" name="smtp_password" type="password" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{end}}"></div>
-  <div class="field"><label for="ch-from">{{t $l "nf.from"}}</label><input id="ch-from" name="from" value="{{.Config.From}}" placeholder="nimdeploy &lt;deploy@example.com&gt;"></div></div>
-  <div class="field" data-kinds="email"><label for="ch-to">{{t $l "nf.to"}}</label><input id="ch-to" name="to" value="{{.To}}" placeholder="ops@example.com, dev@example.com"></div>
+  <div class="field"><span class="lab">{{t $l "nf.kind"}}</span>
+    <div class="kinds" role="radiogroup">{{range .Kinds}}<label class="kind-opt"><input type="radio" name="kind" value="{{.Value}}" {{if .On}}checked{{end}}><span>{{.Label}}</span></label>{{end}}</div></div>
+  <div class="howto" data-kinds="slack" {{if ne $k "slack"}}hidden{{end}}>{{t $l "nf.how_slack"}}</div>
+  <div class="howto" data-kinds="discord" {{if ne $k "discord"}}hidden{{end}}>{{t $l "nf.how_discord"}}</div>
+  <div class="howto" data-kinds="telegram" {{if ne $k "telegram"}}hidden{{end}}>{{t $l "nf.how_telegram"}}</div>
+  <div class="howto" data-kinds="webhook" {{if ne $k "webhook"}}hidden{{end}}>{{t $l "nf.how_webhook"}}</div>
+  <div class="howto" data-kinds="email" {{if ne $k "email"}}hidden{{end}}>{{t $l "nf.how_email"}}</div>
+  <div class="field"><label for="ch-name">{{t $l "nf.name"}}</label><input id="ch-name" name="name" value="{{.Name}}" maxlength="100" placeholder="{{t $l "nf.ch_name_ph"}}" autocomplete="off"></div>
+  <div class="field" data-kinds="slack discord webhook" {{if not (contains "slack discord webhook" $k)}}hidden{{end}}><label for="ch-url">URL</label><input id="ch-url" name="url" type="url" autocomplete="off" spellcheck="false" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{else if eq $k "discord"}}https://discord.com/api/webhooks/…{{else if eq $k "webhook"}}https://example.com/nimdeploy{{else}}https://hooks.slack.com/services/…{{end}}"></div>
+  <div class="row2" data-kinds="telegram" {{if ne $k "telegram"}}hidden{{end}}><div class="field"><label for="ch-bot">{{t $l "nf.bot_token"}}</label><input id="ch-bot" name="bot_token" type="password" autocomplete="new-password" spellcheck="false" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{else}}123456789:AA…{{end}}"></div>
+  <div class="field"><label for="ch-chat">{{t $l "nf.chat_id"}}</label><input id="ch-chat" name="chat_id" value="{{.Config.ChatID}}" autocomplete="off" placeholder="-1001234567890"></div></div>
+  <fieldset class="group smtp" data-kinds="email" {{if ne $k "email"}}hidden{{end}}><legend>SMTP</legend>
+    <div class="field"><label for="ch-host">{{t $l "nf.smtp_host"}}</label><input id="ch-host" name="smtp_host" value="{{.Config.SMTPHost}}" autocomplete="off" placeholder="smtp.example.com"></div>
+    <div class="row2"><div class="field"><label for="ch-port">{{t $l "nf.smtp_port"}}</label><input id="ch-port" name="smtp_port" inputmode="numeric" value="{{if .Config.SMTPPort}}{{.Config.SMTPPort}}{{end}}" placeholder="587"></div>
+    <div class="field"><label for="ch-tls">{{t $l "nf.smtp_tls"}}</label><select id="ch-tls" name="smtp_tls"><option value="starttls" {{if eq .Config.SMTPTLS "starttls"}}selected{{end}}>STARTTLS</option><option value="tls" {{if eq .Config.SMTPTLS "tls"}}selected{{end}}>TLS</option><option value="none" {{if eq .Config.SMTPTLS "none"}}selected{{end}}>{{t $l "nf.smtp_none"}}</option></select></div></div>
+    <div class="row2"><div class="field"><label for="ch-user">{{t $l "nf.smtp_user"}}</label><input id="ch-user" name="smtp_user" value="{{.Config.SMTPUser}}" autocomplete="off"></div>
+    <div class="field"><label for="ch-pass">{{t $l "nf.smtp_pass"}}</label><input id="ch-pass" name="smtp_password" type="password" autocomplete="new-password" placeholder="{{if .Editing}}{{t $l "nf.keep"}}{{end}}"></div></div>
+  </fieldset>
+  <div class="row2" data-kinds="email" {{if ne $k "email"}}hidden{{end}}><div class="field"><label for="ch-from">{{t $l "nf.from"}}</label><input id="ch-from" name="from" value="{{.Config.From}}" autocomplete="off" placeholder="nimdeploy &lt;deploy@example.com&gt;"></div>
+  <div class="field"><label for="ch-to">{{t $l "nf.to"}}</label><input id="ch-to" name="to" value="{{.To}}" autocomplete="off" placeholder="ops@example.com, dev@example.com"></div></div>
   <p class="hint muted" style="margin:0">{{t $l "nf.secrets_note"}}</p>
 </form>
 <div class="drawer-foot"><button class="btn" type="button" data-close>{{t $l "new.cancel"}}</button><button class="btn primary" type="submit" form="chForm">{{t $l "nf.save"}}</button></div>{{end}}
 
 {{define "chan-test"}}<span class="test-result {{if .OK}}ok{{else}}bad{{end}}">{{.Text}}</span>{{end}}
 
-{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nimdeploy hub</title><link rel="stylesheet" href="/static/hub.css"><link rel="icon" href="/static/mark.svg" type="image/svg+xml"></head>
+{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nimdeploy hub</title><link rel="stylesheet" href="/static/hub.css?v={{ver}}"><link rel="icon" href="/static/mark.svg" type="image/svg+xml"></head>
 <body><form class="login" method="post" action="/login">
 <h1 class="login-logo"><picture><source media="(prefers-color-scheme: dark)" srcset="/static/logo-dark.png"><img src="/static/logo.png" alt="nimdeploy" width="220"></picture><span>hub</span></h1>
 <p class="muted" style="margin:0">{{.Hint}}</p>

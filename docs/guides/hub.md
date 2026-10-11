@@ -195,24 +195,34 @@ Telegram, any URL (JSON) or email. It has two parts:
   a Telegram bot and chat, a URL that takes a JSON `POST`, or an SMTP server
   and its recipients. **Send test** checks one right away, and each shows
   how its last delivery went.
-- **Rules**: which events go to which destinations. A rule picks events, and
-  can be limited to some clients, environments, servers and deploys (ticking
-  nothing in a group includes all of it). It sends to one or more
-  destinations, in English or Spanish, and can be paused.
+- **Rules**: which events go to which destinations, set up in five steps
+  so a hub with many clients and repositories stays readable:
+    1. **Clients**: one, several, or none for all of them (including those
+       added later).
+    2. **Environments**: only those of the clients picked.
+    3. **What**: deploys (git webhooks, and runs by hand or from the hub),
+       [scheduled tasks](scheduled.md) (jobs with only a `schedule`, like
+       cron), or both. Optionally narrow it to some servers (for their
+       offline and certificate alerts) and some jobs, listed per server with
+       their type and repository or schedule.
+    4. **Events**.
+    5. **Destinations**, name, language (English or Spanish), with a summary.
+
+  Rules can be edited, paused and deleted.
 
 | Event | When |
 |---|---|
-| Deploy failed | a run fails; the message carries the end of its log |
-| Deploy recovered | the first success after a failure |
-| Deploy succeeded | every successful run |
-| Request rejected | a webhook was refused (bad signature, wrong repository…) |
+| Run failed | a deploy or scheduled task fails; the message carries the end of its log |
+| Run recovered | the first success after a failure |
+| Run succeeded | every successful run |
+| Webhook rejected | a webhook was refused (bad signature, wrong repository…) |
 | Server offline / back online | an agent misses three heartbeats, and when it returns |
 | Certificate expiring | an agent's certificate expires within 30 days |
 | Command refused | the agent refused a run or rollback from the hub |
 
 For example, one rule for every production failure to the on-call Telegram
-chat, and another for everything about one client to that client's Slack
-channel. A destination gets each event once, even when several rules match.
+chat, another for everything about one client to that client's Slack
+channel, and a third for failed backups (scheduled tasks) to email. A destination gets each event once, even when several rules match.
 
 Each message says what happened, where (client, environment, server), the
 commit and who pushed it, the error, and links to the deploy in the hub when

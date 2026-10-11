@@ -128,7 +128,22 @@ type notifyRule struct {
 	ID, Name, Lang                                   string
 	Enabled                                          bool
 	Events, Clients, Envs, Agents, Deploys, Channels []string
-	CreatedAt                                        time.Time
+	// Kinds: "deploy" (webhook deploys) and "task" (scheduled jobs); empty: both.
+	Kinds     []string
+	CreatedAt time.Time
+}
+
+const (
+	jobDeploy = "deploy"
+	jobTask   = "task"
+)
+
+// jobKind tells a scheduled job (no webhook) from a deploy.
+func jobKind(provider string) string {
+	if provider == providerSchedule {
+		return jobTask
+	}
+	return jobDeploy
 }
 
 func (r notifyRule) matches(n hubNotice) bool {
@@ -141,14 +156,19 @@ func (r notifyRule) matches(n hubNotice) bool {
 	if !in(r.Clients, n.Client) || !in(r.Envs, n.Env) || !in(r.Agents, n.Agent) {
 		return false
 	}
-	// Agent events have no deploy: a deploy filter doesn't hold them back.
-	return n.Deploy == "" || in(r.Deploys, n.Deploy)
+	// Agent events have no deploy: the job filters don't hold them back.
+	if n.Deploy == "" {
+		return true
+	}
+	// Jobs are kept as agent/deploy (a name alone matches it on any agent).
+	return in(r.Kinds, n.Kind) && (in(r.Deploys, n.Agent+"/"+n.Deploy) || in(r.Deploys, n.Deploy))
 }
 
 // hubNotice is one thing worth telling: what happened, where, and the details
 // to render in the rule's language.
 type hubNotice struct {
 	Event, Agent, Deploy, Client, Env string
+	Kind                              string // of the job: deploy or task
 	State                             *State
 	Reason                            string
 	LogTail                           []string
@@ -387,6 +407,7 @@ func (h *hubServer) noticesFor(ctx context.Context, a hubAgentRow, events []hubE
 		base := hubNotice{Agent: a.Name, Deploy: ev.Deploy, Client: a.ClientName(), Env: a.EnvName(), State: ev.State,
 			Reason: ev.Reason, Time: ev.Time}
 		if ev.State != nil {
+			base.Kind = jobKind(ev.State.Provider)
 			base.Client = firstNonEmpty(ev.State.Labels["client"], base.Client)
 			base.Env = firstNonEmpty(ev.State.Labels["environment"], base.Env)
 		}
@@ -538,7 +559,7 @@ func (s *hubStore) notifyRules(ctx context.Context) ([]notifyRule, error) {
 		n := notifyRule{ID: r.str("id"), Name: r.str("name"), Lang: r.str("lang"), Enabled: r.int("enabled") == 1,
 			CreatedAt: parseTime(r.str("created_at"))}
 		for col, dst := range map[string]*[]string{"events": &n.Events, "clients": &n.Clients, "envs": &n.Envs,
-			"agents": &n.Agents, "deploys": &n.Deploys, "channels": &n.Channels} {
+			"agents": &n.Agents, "deploys": &n.Deploys, "channels": &n.Channels, "kinds": &n.Kinds} {
 			_ = json.Unmarshal([]byte(r.str(col)), dst)
 		}
 		out = append(out, n)
@@ -553,12 +574,13 @@ func (s *hubStore) saveRule(ctx context.Context, r notifyRule) error {
 		}
 		return jsonText(v)
 	}
-	return s.db.Exec(ctx, sqlStmt{SQL: `INSERT INTO notify_rules (id, name, lang, enabled, events, clients, envs, agents, deploys, channels, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	return s.db.Exec(ctx, sqlStmt{SQL: `INSERT INTO notify_rules (id, name, lang, enabled, events, clients, envs, agents, deploys, channels, kinds, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET name = excluded.name, lang = excluded.lang, enabled = excluded.enabled, events = excluded.events,
-			clients = excluded.clients, envs = excluded.envs, agents = excluded.agents, deploys = excluded.deploys, channels = excluded.channels`,
+			clients = excluded.clients, envs = excluded.envs, agents = excluded.agents, deploys = excluded.deploys, channels = excluded.channels,
+			kinds = excluded.kinds`,
 		Args: []any{r.ID, r.Name, r.Lang, r.Enabled, list(r.Events), list(r.Clients), list(r.Envs), list(r.Agents), list(r.Deploys),
-			list(r.Channels), nowText()}})
+			list(r.Channels), list(r.Kinds), nowText()}})
 }
 
 func (s *hubStore) setRuleEnabled(ctx context.Context, id string, on bool) error {

@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,13 +27,6 @@ type channelView struct {
 type opt struct {
 	Value, Label string
 	On           bool
-}
-
-type ruleForm struct {
-	Lang, CSRF, Error, ID, Name, RuleLang string
-	Enabled                               bool
-	Events, Clients, Envs, Agents         []opt
-	Deploys, Channels                     []opt
 }
 
 type channelForm struct {
@@ -78,10 +70,14 @@ func (h *hubServer) pageNotifications(w http.ResponseWriter, r *http.Request, wh
 		for _, e := range ru.Events {
 			v.Events = append(v.Events, hubT(lang, "ev."+e))
 		}
+		var kinds []string
+		for _, k := range ru.Kinds {
+			kinds = append(kinds, hubT(lang, "nf.kind_"+k))
+		}
 		for _, f := range []struct {
 			key  string
 			vals []string
-		}{{"nf.f_clients", ru.Clients}, {"nf.f_envs", ru.Envs}, {"nf.f_agents", ru.Agents}, {"nf.f_deploys", ru.Deploys}} {
+		}{{"nf.f_clients", ru.Clients}, {"nf.f_envs", ru.Envs}, {"nf.watch", kinds}, {"nf.f_agents", ru.Agents}, {"nf.f_jobs", ru.Deploys}} {
 			if len(f.vals) > 0 {
 				v.Filters = append(v.Filters, hubT(lang, f.key)+": "+strings.Join(f.vals, ", "))
 			}
@@ -109,7 +105,50 @@ func (h *hubServer) notifyData(ctx context.Context) ([]notifyRule, []notifyChann
 	return rules, chans, err
 }
 
-// --- rules ---------------------------------------------------------------------------------
+// --- rules: a wizard in five steps ------------------------------------------------------------
+//
+// 1 clients, 2 environments, 3 what to watch (deploys or scheduled tasks, and
+// optionally some servers and jobs), 4 events, 5 destinations and name. Each
+// step only lists what fits the previous ones, so a hub with many clients
+// and repositories stays readable. Values of the other steps travel as
+// hidden fields; nothing is stored until the last step.
+
+const ruleSteps = 5
+
+// ruleStepFields are the form fields each step shows; the rest go hidden.
+var ruleStepFields = map[int][]string{1: {"client"}, 2: {"env"}, 3: {"kind", "agent", "deploy"}, 4: {"event"},
+	5: {"channel", "name", "lang", "enabled"}}
+
+type kv struct{ Name, Value string }
+
+type stepView struct {
+	N        int
+	Label    string
+	On, Done bool
+}
+
+type jobOpt struct {
+	Value, Name, KindLabel, Kind, Detail string
+	On                                   bool
+}
+
+type jobGroup struct {
+	Agent, Where string
+	On           bool
+	Jobs         []jobOpt
+}
+
+type ruleForm struct {
+	Lang, CSRF, Error, ID, Name, RuleLang, NamePH string
+	Enabled, Narrowed                             bool
+	Step                                          int
+	Steps                                         []stepView
+	Hidden                                        []kv
+	Clients, Envs, Kinds                          []opt
+	Groups                                        []jobGroup
+	RunEvents, ServerEvents, Channels             []opt
+	Summary                                       []string
+}
 
 func (h *hubServer) uiRuleForm(w http.ResponseWriter, r *http.Request, _ string) {
 	ru := notifyRule{Enabled: true, Lang: hubLang(r), Events: []string{notifyDeployFailed, notifyDeployRecovered, notifyAgentOffline}}
@@ -126,107 +165,277 @@ func (h *hubServer) uiRuleForm(w http.ResponseWriter, r *http.Request, _ string)
 		}
 		ru = rules[i]
 	}
-	h.renderRuleForm(w, r, ru, "")
+	h.renderRuleStep(w, r, ru, 1, "")
 }
 
-func (h *hubServer) renderRuleForm(w http.ResponseWriter, r *http.Request, ru notifyRule, errMsg string) {
-	lang := hubLang(r)
-	f := ruleForm{Lang: lang, CSRF: csrfToken(w, r), Error: errMsg, ID: ru.ID, Name: ru.Name, RuleLang: firstNonEmpty(ru.Lang, lang), Enabled: ru.Enabled}
-	for _, e := range notifyEvents {
-		f.Events = append(f.Events, opt{Value: e, Label: hubT(lang, "ev."+e), On: slices.Contains(ru.Events, e)})
-	}
-	clients, envs, agents, deploys := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
-	if d, err := h.load(r.Context()); err == nil {
-		for _, a := range d.agents {
-			if a.RevokedAt == "" {
-				agents[a.Name] = true
-			}
-		}
-		for _, v := range d.views {
-			clients[v.Client], envs[v.Env], deploys[v.Deploy] = true, true, true
-		}
-		cs, _ := d.clientsOf()
-		for _, c := range cs {
-			clients[c] = true
+func cleanValues(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); v != "" && len(v) <= 200 && !slices.Contains(out, v) {
+			out = append(out, v)
 		}
 	}
-	// Values a rule already has stay listed even if nothing reports them now.
-	for set, vals := range map[*map[string]bool][]string{&clients: ru.Clients, &envs: ru.Envs, &agents: ru.Agents, &deploys: ru.Deploys} {
-		for _, v := range vals {
-			(*set)[v] = true
-		}
-	}
-	options := func(set map[string]bool, on []string) []opt {
-		var keys []string
-		for k := range set {
-			if k != "" {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		out := make([]opt, 0, len(keys))
-		for _, k := range keys {
-			out = append(out, opt{Value: k, Label: k, On: slices.Contains(on, k)})
-		}
-		return out
-	}
-	f.Clients, f.Envs, f.Agents, f.Deploys = options(clients, ru.Clients), options(envs, ru.Envs), options(agents, ru.Agents), options(deploys, ru.Deploys)
-	if chans, err := h.store.notifyChannels(r.Context()); err == nil {
-		for _, c := range chans {
-			f.Channels = append(f.Channels, opt{Value: c.ID, Label: c.Name + " · " + hubT(lang, "kind."+c.Kind), On: slices.Contains(ru.Channels, c.ID)})
-		}
-	}
-	h.renderTemplate(w, http.StatusOK, "drawer-rule", f)
+	return out
 }
 
-func (h *hubServer) uiSaveRule(w http.ResponseWriter, r *http.Request, who string) {
+func ruleFromForm(r *http.Request) notifyRule {
+	ru := notifyRule{ID: r.FormValue("id"), Name: strings.TrimSpace(r.FormValue("name")), Lang: r.FormValue("lang"),
+		Enabled: r.FormValue("enabled") == "on", Clients: cleanValues(r.Form["client"]), Envs: cleanValues(r.Form["env"]),
+		Agents: cleanValues(r.Form["agent"]), Deploys: cleanValues(r.Form["deploy"]), Channels: cleanValues(r.Form["channel"])}
+	for _, e := range cleanValues(r.Form["event"]) {
+		if slices.Contains(notifyEvents, e) {
+			ru.Events = append(ru.Events, e)
+		}
+	}
+	for _, k := range cleanValues(r.Form["kind"]) {
+		if k == jobDeploy || k == jobTask {
+			ru.Kinds = append(ru.Kinds, k)
+		}
+	}
+	if len(ru.Kinds) == 2 {
+		ru.Kinds = nil // both is no filter
+	}
+	if ru.Lang != "es" {
+		ru.Lang = "en"
+	}
+	return ru
+}
+
+// uiRuleStep moves between steps (go=1..5) or saves the rule (go=save).
+func (h *hubServer) uiRuleStep(w http.ResponseWriter, r *http.Request, who string) {
 	lang := hubLang(r)
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	clean := func(vals []string) []string {
-		var out []string
-		for _, v := range vals {
-			if v = strings.TrimSpace(v); v != "" && len(v) <= 200 && !slices.Contains(out, v) {
-				out = append(out, v)
-			}
+	ru := ruleFromForm(r)
+	from, _ := strconv.Atoi(r.FormValue("step"))
+	to := r.FormValue("go")
+	if n, err := strconv.Atoi(to); err == nil && n >= 1 && n <= ruleSteps {
+		if n > from && from == 4 && len(ru.Events) == 0 {
+			h.renderRuleStep(w, r, ru, 4, hubT(lang, "nf.err_events"))
+			return
 		}
-		return out
-	}
-	ru := notifyRule{ID: r.FormValue("id"), Name: strings.TrimSpace(r.FormValue("name")), Lang: r.FormValue("lang"), Enabled: r.FormValue("enabled") == "on",
-		Clients: clean(r.Form["client"]), Envs: clean(r.Form["env"]), Agents: clean(r.Form["agent"]), Deploys: clean(r.Form["deploy"]),
-		Channels: clean(r.Form["channel"])}
-	for _, e := range clean(r.Form["event"]) {
-		if slices.Contains(notifyEvents, e) {
-			ru.Events = append(ru.Events, e)
-		}
-	}
-	if ru.Lang != "es" {
-		ru.Lang = "en"
+		h.renderRuleStep(w, r, ru, n, "")
+		return
 	}
 	switch {
-	case ru.Name == "" || len(ru.Name) > 100:
-		h.renderRuleForm(w, r, ru, hubT(lang, "nf.err_name"))
-		return
 	case len(ru.Events) == 0:
-		h.renderRuleForm(w, r, ru, hubT(lang, "nf.err_events"))
+		h.renderRuleStep(w, r, ru, 4, hubT(lang, "nf.err_events"))
 		return
 	case len(ru.Channels) == 0:
-		h.renderRuleForm(w, r, ru, hubT(lang, "nf.err_dests"))
+		h.renderRuleStep(w, r, ru, 5, hubT(lang, "nf.err_dests"))
 		return
+	case len(ru.Name) > 100:
+		h.renderRuleStep(w, r, ru, 5, hubT(lang, "nf.err_name"))
+		return
+	}
+	if ru.Name == "" {
+		ru.Name = h.suggestRuleName(lang, ru)
 	}
 	if ru.ID == "" {
 		ru.ID = newNotifyID()
 	}
 	if err := h.store.saveRule(r.Context(), ru); err != nil {
-		h.renderRuleForm(w, r, ru, err.Error())
+		h.renderRuleStep(w, r, ru, 5, err.Error())
 		return
 	}
 	h.audit(r, who, "notification rule %q saved", ru.Name)
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ruleScope is what the hub knows, narrowed by the rule's clients and environments.
+type ruleScope struct {
+	clients, envs []string
+	agents        []hubAgentRow
+	views         []hubView
+}
+
+func (h *hubServer) ruleScope(ctx context.Context, lang string, ru notifyRule) ruleScope {
+	var sc ruleScope
+	d, err := h.load(ctx)
+	if err != nil {
+		return sc
+	}
+	in := func(list []string, v string) bool {
+		return len(list) == 0 || slices.ContainsFunc(list, func(x string) bool { return strings.EqualFold(x, v) })
+	}
+	clients, envs := map[string]bool{}, map[string]bool{}
+	cs, _ := d.clientsOf()
+	for _, c := range cs {
+		if c != "" {
+			clients[c] = true
+		}
+	}
+	for _, v := range d.views {
+		if v.Client != "" {
+			clients[v.Client] = true
+		}
+		if in(ru.Clients, v.Client) && v.Env != "" {
+			envs[v.Env] = true
+		}
+	}
+	agentIn := map[string]bool{}
+	for _, a := range d.agents {
+		if a.RevokedAt != "" {
+			continue
+		}
+		if in(ru.Clients, a.ClientName()) && a.EnvName() != "" {
+			envs[a.EnvName()] = true
+		}
+		if in(ru.Clients, a.ClientName()) && in(ru.Envs, a.EnvName()) {
+			agentIn[a.Name] = true
+		}
+	}
+	for _, v := range d.views {
+		if in(ru.Clients, v.Client) && in(ru.Envs, v.Env) && v.InInventory {
+			agentIn[v.Agent] = true
+			sc.views = append(sc.views, v)
+		}
+	}
+	for _, a := range d.agents {
+		if agentIn[a.Name] && a.RevokedAt == "" {
+			sc.agents = append(sc.agents, a)
+		}
+	}
+	sc.clients, sc.envs = sortedKeys(clients), sortedKeys(envs)
+	return sc
+}
+
+func (h *hubServer) renderRuleStep(w http.ResponseWriter, r *http.Request, ru notifyRule, step int, errMsg string) {
+	lang := hubLang(r)
+	ctx := r.Context()
+	sc := h.ruleScope(ctx, lang, ru)
+	f := ruleForm{Lang: lang, CSRF: csrfToken(w, r), Error: errMsg, ID: ru.ID, Name: ru.Name, RuleLang: firstNonEmpty(ru.Lang, lang),
+		Enabled: ru.Enabled, Step: step}
+	for n := 1; n <= ruleSteps; n++ {
+		f.Steps = append(f.Steps, stepView{N: n, Label: hubT(lang, "nf.step"+strconv.Itoa(n)), On: n == step, Done: n < step})
+	}
+	// Everything not on this step travels hidden.
+	values := map[string][]string{"client": ru.Clients, "env": ru.Envs, "kind": ru.Kinds, "agent": ru.Agents, "deploy": ru.Deploys,
+		"event": ru.Events, "channel": ru.Channels, "name": {ru.Name}, "lang": {ru.Lang}}
+	if ru.Enabled {
+		values["enabled"] = []string{"on"}
+	}
+	for _, name := range []string{"client", "env", "kind", "agent", "deploy", "event", "channel", "name", "lang", "enabled"} {
+		if slices.Contains(ruleStepFields[step], name) {
+			continue
+		}
+		for _, v := range values[name] {
+			if v != "" {
+				f.Hidden = append(f.Hidden, kv{name, v})
+			}
+		}
+	}
+	opts := func(all, on []string) []opt {
+		out := make([]opt, 0, len(all))
+		for _, v := range all {
+			out = append(out, opt{Value: v, Label: v, On: slices.ContainsFunc(on, func(x string) bool { return strings.EqualFold(x, v) })})
+		}
+		return out
+	}
+	switch step {
+	case 1:
+		f.Clients = opts(sc.clients, ru.Clients)
+	case 2:
+		f.Envs = opts(sc.envs, ru.Envs)
+	case 3:
+		for _, k := range []string{jobDeploy, jobTask} {
+			f.Kinds = append(f.Kinds, opt{Value: k, Label: hubT(lang, "nf.kind_"+k), On: len(ru.Kinds) == 0 || slices.Contains(ru.Kinds, k)})
+		}
+		byAgent := map[string]*jobGroup{}
+		for _, a := range sc.agents {
+			g := &jobGroup{Agent: a.Name, Where: agentWhere(lang, a), On: slices.Contains(ru.Agents, a.Name)}
+			byAgent[a.Name] = g
+		}
+		for _, v := range sc.views {
+			g := byAgent[v.Agent]
+			if g == nil {
+				continue
+			}
+			kind := jobKind(v.Provider)
+			detail := v.Repository
+			if kind == jobTask || detail == "" {
+				detail = v.Schedule
+			}
+			value := v.Agent + "/" + v.Deploy
+			g.Jobs = append(g.Jobs, jobOpt{Value: value, Name: v.Deploy, Kind: kind, KindLabel: hubT(lang, "nf.kind1_"+kind), Detail: detail,
+				On: slices.Contains(ru.Deploys, value) || slices.Contains(ru.Deploys, v.Deploy)})
+		}
+		for _, a := range sc.agents {
+			f.Groups = append(f.Groups, *byAgent[a.Name])
+		}
+		f.Narrowed = len(ru.Agents) > 0 || len(ru.Deploys) > 0
+	case 4:
+		for _, e := range notifyEvents {
+			o := opt{Value: e, Label: hubT(lang, "ev."+e), On: slices.Contains(ru.Events, e)}
+			if strings.HasPrefix(e, "agent.") || strings.HasPrefix(e, "cert.") {
+				f.ServerEvents = append(f.ServerEvents, o)
+			} else {
+				f.RunEvents = append(f.RunEvents, o)
+			}
+		}
+	case 5:
+		if chans, err := h.store.notifyChannels(ctx); err == nil {
+			for _, c := range chans {
+				f.Channels = append(f.Channels, opt{Value: c.ID, Label: c.Name + " · " + hubT(lang, "kind."+c.Kind),
+					On: slices.Contains(ru.Channels, c.ID)})
+			}
+		}
+		f.NamePH = h.suggestRuleName(lang, ru)
+		f.Summary = ruleSummary(lang, ru)
+	}
+	h.renderTemplate(w, http.StatusOK, "drawer-rule", f)
+}
+
+func ruleSummary(lang string, ru notifyRule) []string {
+	all := func(vals []string, key string) string {
+		if len(vals) == 0 {
+			return hubT(lang, key)
+		}
+		return strings.Join(vals, ", ")
+	}
+	kinds := hubT(lang, "nf.kinds_all")
+	if len(ru.Kinds) == 1 {
+		kinds = hubT(lang, "nf.kind_"+ru.Kinds[0])
+	}
+	var events []string
+	for _, e := range ru.Events {
+		events = append(events, hubT(lang, "ev."+e))
+	}
+	out := []string{
+		hubT(lang, "nf.f_clients") + ": " + all(ru.Clients, "nf.all_m"),
+		hubT(lang, "nf.f_envs") + ": " + all(ru.Envs, "nf.all_m"),
+		hubT(lang, "nf.watch") + ": " + kinds,
+	}
+	if len(ru.Agents) > 0 {
+		out = append(out, hubT(lang, "nf.f_agents")+": "+strings.Join(ru.Agents, ", "))
+	}
+	if len(ru.Deploys) > 0 {
+		out = append(out, hubT(lang, "nf.f_jobs")+": "+strings.Join(ru.Deploys, ", "))
+	}
+	return append(out, hubT(lang, "nf.events")+": "+all(events, "nf.none"))
+}
+
+// suggestRuleName names a rule after what it covers: "Acme · production — failures".
+func (h *hubServer) suggestRuleName(lang string, ru notifyRule) string {
+	var parts []string
+	if len(ru.Clients) > 0 && len(ru.Clients) <= 2 {
+		parts = append(parts, strings.Join(ru.Clients, ", "))
+	}
+	if len(ru.Envs) > 0 && len(ru.Envs) <= 2 {
+		parts = append(parts, strings.Join(ru.Envs, ", "))
+	}
+	where := strings.Join(parts, " · ")
+	if where == "" {
+		where = hubT(lang, "nf.everything")
+	}
+	if len(ru.Kinds) == 1 {
+		where += " · " + hubT(lang, "nf.kind_"+ru.Kinds[0])
+	}
+	return clip(where, 100)
 }
 
 func (h *hubServer) uiToggleRule(w http.ResponseWriter, r *http.Request, who string) {

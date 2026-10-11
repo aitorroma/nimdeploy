@@ -447,7 +447,7 @@ func (h *hubServer) routes() http.Handler {
 	mux.HandleFunc("GET /notifications", h.ui(h.pageNotifications))
 	mux.HandleFunc("GET /ui/notify/rules/new", h.ui(h.uiRuleForm))
 	mux.HandleFunc("GET /ui/notify/rules/{id}", h.ui(h.uiRuleForm))
-	mux.HandleFunc("POST /ui/notify/rules", h.changes(h.uiSaveRule))
+	mux.HandleFunc("POST /ui/notify/rules", h.changes(h.uiRuleStep))
 	mux.HandleFunc("POST /ui/notify/rules/{id}/toggle", h.changes(h.uiToggleRule))
 	mux.HandleFunc("POST /ui/notify/rules/{id}/delete", h.changes(h.uiDeleteRule))
 	mux.HandleFunc("GET /ui/notify/channels/new", h.ui(h.uiChannelForm))

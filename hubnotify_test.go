@@ -34,6 +34,16 @@ func TestNotifyRuleMatch(t *testing.T) {
 			t.Errorf("%+v: %v, want %v", c.n, got, c.want)
 		}
 	}
+	// Jobs as agent/deploy, and job kinds.
+	tasks := notifyRule{Enabled: true, Events: []string{notifyDeployFailed}, Kinds: []string{jobTask}, Deploys: []string{"acme-prod/backup"}}
+	if !tasks.matches(hubNotice{Event: notifyDeployFailed, Agent: "acme-prod", Deploy: "backup", Kind: jobTask}) ||
+		tasks.matches(hubNotice{Event: notifyDeployFailed, Agent: "acme-stage", Deploy: "backup", Kind: jobTask}) ||
+		tasks.matches(hubNotice{Event: notifyDeployFailed, Agent: "acme-prod", Deploy: "backup", Kind: jobDeploy}) {
+		t.Error("kinds or agent/deploy")
+	}
+	if jobKind(providerSchedule) != jobTask || jobKind("github") != jobDeploy {
+		t.Error("jobKind")
+	}
 	if (notifyRule{Events: []string{notifyDeployFailed}}).matches(hubNotice{Event: notifyDeployFailed}) {
 		t.Error("a paused rule matched")
 	}
@@ -200,6 +210,18 @@ func TestHubNotifications(t *testing.T) {
 	if _, body, _ := u.do("POST", "/ui/notify/rules", url.Values{"name": {"r"}, "event": {notifyDeployFailed}}, true); !strings.Contains(body, "destination") {
 		t.Errorf("rule without destinations accepted: %s", body)
 	}
+	// The wizard: each step lists what fits the previous ones, and carries the rest.
+	if _, body, _ := u.do("GET", "/ui/notify/rules/new", nil, false); !strings.Contains(body, `name="client" value="Acme"`) || !strings.Contains(body, `value="Beta"`) {
+		t.Errorf("step 1 lists clients")
+	}
+	_, body, _ := u.do("POST", "/ui/notify/rules", url.Values{"step": {"1"}, "go": {"3"}, "client": {"Acme"}, "event": {notifyDeployFailed}}, true)
+	if !strings.Contains(body, `name="agent" value="acme-prod"`) || strings.Contains(body, `value="beta-prod"`) ||
+		!strings.Contains(body, `type="hidden" name="client" value="Acme"`) || !strings.Contains(body, `type="hidden" name="event"`) {
+		t.Errorf("step 3 for Acme:\n%s", body)
+	}
+	if _, body, _ := u.do("POST", "/ui/notify/rules", url.Values{"step": {"4"}, "go": {"5"}}, true); !strings.Contains(body, "event") || !strings.Contains(body, `name="step" value="4"`) {
+		t.Errorf("leaving the events step empty")
+	}
 	rule := url.Values{"name": {"Acme production"}, "lang": {"en"}, "enabled": {"on"},
 		"event":   {notifyDeployFailed, notifyDeployRecovered, notifyAgentOffline, notifyAgentBack},
 		"client":  {"Acme"},
@@ -208,7 +230,7 @@ func TestHubNotifications(t *testing.T) {
 	if code, body, _ := u.do("POST", "/ui/notify/rules", rule, true); code != http.StatusNoContent {
 		t.Fatalf("rule: %d %s", code, body)
 	}
-	if _, body, _ := u.do("GET", "/notifications", nil, false); !strings.Contains(body, "Acme production") || !strings.Contains(body, "Deploy failed") ||
+	if _, body, _ := u.do("GET", "/notifications", nil, false); !strings.Contains(body, "Acme production") || !strings.Contains(body, "Run failed") ||
 		!strings.Contains(body, "ops hook") || strings.Contains(body, hookSrv.URL+"/hook") {
 		t.Errorf("notifications page")
 	}
