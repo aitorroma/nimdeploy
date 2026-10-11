@@ -1,11 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +157,62 @@ func TestHubAgentCA(t *testing.T) {
 	if err := send(ocf, okf); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("another agent's certificate: %v", err)
 	}
+	// The agent renews its certificate for the same key: the token and the
+	// key stay, the certificate file is replaced.
+	cfg := HubConfig{URL: base, Agent: "prod-1", token: token, CAFile: p.caFile, CertFile: cf, KeyFile: kf}
+	if _, renewed, err := renewHubCert(ctx, cfg, hubClient(cfg), false); err != nil || renewed {
+		t.Fatalf("a certificate valid for a year needs no renewal: %v %v", renewed, err)
+	}
+	first, _ := os.ReadFile(cf)
+	oldCF := filepath.Join(dir, "prod-1-old.pem")
+	_ = os.WriteFile(oldCF, first, 0o600)
+	keyBefore, _ := os.ReadFile(kf)
+	if _, renewed, err := renewHubCert(ctx, cfg, hubClient(cfg), true); err != nil || !renewed {
+		t.Fatalf("forced renewal: %v %v", renewed, err)
+	}
+	second, _ := os.ReadFile(cf)
+	keyAfter, _ := os.ReadFile(kf)
+	if bytes.Equal(first, second) || !bytes.Equal(keyBefore, keyAfter) {
+		t.Fatal("renewing must replace the certificate and keep the key")
+	}
+	if fi, _ := os.Stat(cf); fi.Mode().Perm() != 0o600 {
+		t.Errorf("renewed certificate mode %v", fi.Mode())
+	}
+	a, _, _ := store.agent(ctx, "prod-1")
+	block, _ := pem.Decode(second)
+	if a.CertFP != certFingerprint(block.Bytes) || a.CertFPPrev != ic.Fingerprint || a.CertRenewedAt.IsZero() {
+		t.Errorf("after renewing: %+v", a)
+	}
+	if err := send(cf, kf); err != nil {
+		t.Errorf("renewed certificate: %v", err)
+	}
+	if err := send(oldCF, kf); err != nil {
+		t.Errorf("the certificate it renewed with (same key) still works: %v", err)
+	}
+	// A second renewal retires the first certificate.
+	if _, _, err := renewHubCert(ctx, cfg, hubClient(cfg), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := send(oldCF, kf); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Errorf("certificate from two renewals ago: %v", err)
+	}
+	// The request must be for the current key, and come from this agent.
+	otherKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "prod-1"}}, otherKey)
+	body, _ := json.Marshal(hubCertRequest{CSR: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))})
+	req, _ := http.NewRequest(http.MethodPost, base+hubCertPath, bytes.NewReader(body))
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	req.Header.Set(hubAgentHeader, "prod-1")
+	req.Header.Set(hubTimestampHeader, ts)
+	req.Header.Set(hubSignatureHeader, signHub([]byte(token), ts, body))
+	if resp, err := hubClient(cfg).Do(req); err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("request for another key: %v %v", resp, err)
+	}
+	ocfg := HubConfig{URL: base, Agent: "prod-1", token: token, CAFile: p.caFile, CertFile: ocf, KeyFile: okf}
+	if _, _, err := renewHubCert(ctx, ocfg, hubClient(ocfg), true); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Errorf("renewing with another agent's certificate: %v", err)
+	}
+
 	// Renewing the agent issues a new certificate: the old one stops working.
 	ic2, err := ca.issue("prod-1") // not written over the old files
 	if err != nil {
@@ -157,7 +222,7 @@ func TestHubAgentCA(t *testing.T) {
 	if err := send(cf, kf); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("old certificate after renewing: %v", err)
 	}
-	a, _, _ := store.agent(ctx, "prod-1")
+	a, _, _ = store.agent(ctx, "prod-1")
 	if a.Client != "Acme" || a.Env != "production" || !a.RequireCert || time.Until(a.CertNotAfter) < 360*24*time.Hour {
 		t.Errorf("agent %+v", a)
 	}

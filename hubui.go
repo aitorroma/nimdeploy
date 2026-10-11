@@ -335,7 +335,7 @@ const hubHTML = `
     <td><div class="beats" title="{{t $l "ag.beats"}}">{{range .Beats}}<i class="{{if not .}}miss{{end}}"></i>{{end}}</div></td>
     <td class="nowrap"><span class="mono">{{.Version}}</span>{{if .Old}} <span class="badge s-queued">{{t $l "ag.update"}}</span>{{end}}</td>
     <td class="nowrap">{{.LastSeen}}{{if .Outbox}}<div class="muted small">{{.Waiting}}</div>{{end}}</td>
-    <td class="nowrap">{{.Cert}}</td>
+    <td class="nowrap"{{if .CertTitle}} title="{{.CertTitle}}"{{end}}>{{.Cert}}{{if .CertNote}}<div class="muted small">{{.CertNote}}</div>{{end}}</td>
     <td class="nowrap">{{if .Commands}}<span class="on">{{.CommandsLabel}}</span>{{else}}<span class="muted">{{.CommandsLabel}}</span>{{end}}</td>{{end}}
     <td class="agactions">{{template "agent-foot" (foot $l .Name false)}}</td>
   </tr>{{end}}</tbody></table></div>{{else}}<div class="setup" style="margin:0">{{t $l "ag.none"}}</div>{{end}}

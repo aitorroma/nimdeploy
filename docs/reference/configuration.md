@@ -111,7 +111,7 @@ The connection to the [central hub](../guides/hub.md).
 | `heartbeat` | `1m` | |
 | `accept_commands` | `false` | `true`: the hub may run a deploy again or roll it back ([commands](../guides/hub.md#commands-from-the-hub)) |
 | `ca_file` | system roots | the hub's CA, for a private certificate |
-| `cert_file`, `key_file` | – | the agent's client certificate, when the hub requires one ([TLS](../guides/tls.md#hub-and-agents)) |
+| `cert_file`, `key_file` | – | the agent's client certificate, when the hub requires one ([TLS](../guides/tls.md#hub-and-agents)); a certificate from the hub renews itself ([renewal](../guides/hub.md#renewal)) |
 
 ## `[otel]`
 

@@ -15,7 +15,7 @@ import (
 // hubStore keeps the hub's data in libSQL: agents (with their tokens), every
 // event they sent, and the current state of each deploy for the dashboard.
 
-const hubSchemaVersion = 4
+const hubSchemaVersion = 5
 
 var hubSchema = []string{
 	`CREATE TABLE IF NOT EXISTS hub_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -126,6 +126,11 @@ var hubMigrations = [][]string{
 	{
 		`ALTER TABLE notify_rules ADD COLUMN kinds TEXT`,
 	},
+	{
+		`ALTER TABLE agents ADD COLUMN cert_fp_prev TEXT`,
+		`ALTER TABLE agents ADD COLUMN cert_renewed_at TEXT`,
+		`ALTER TABLE agents ADD COLUMN cert_auto_renew INTEGER NOT NULL DEFAULT 0`,
+	},
 }
 
 func (s *hubStore) migrate(ctx context.Context) error {
@@ -183,7 +188,12 @@ type hubAgentRow struct {
 	CertFP          string
 	CertNotAfter    time.Time
 	AcceptsCommands bool
-	token           string
+	// CertFPPrev is the certificate before the last renewal: same key, so
+	// still accepted until the agent's connections pick up the new one.
+	CertFPPrev    string
+	CertRenewedAt time.Time
+	CertAutoRenew bool // the agent renews its certificate itself
+	token         string
 }
 
 // ClientName is the agent's client: its label, else what it was created for.
@@ -239,7 +249,8 @@ func (s *hubStore) createAgent(ctx context.Context, o newAgentOpts) (string, err
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET token = excluded.token, revoked_at = NULL,
 			client = COALESCE(NULLIF(excluded.client, ''), agents.client), env = COALESCE(NULLIF(excluded.env, ''), agents.env),
-			require_cert = excluded.require_cert, cert_fp = excluded.cert_fp, cert_not_after = excluded.cert_not_after`,
+			require_cert = excluded.require_cert, cert_fp = excluded.cert_fp, cert_not_after = excluded.cert_not_after,
+			cert_fp_prev = NULL, cert_renewed_at = NULL`,
 		Args: []any{o.Name, token, nowText(), o.Client, o.Env, o.RequireCert, nullIfEmpty(o.CertFP), notAfter}})
 	return token, err
 }
@@ -257,6 +268,13 @@ func (s *hubStore) agent(ctx context.Context, name string) (hubAgentRow, bool, e
 		return hubAgentRow{}, false, err
 	}
 	return agentFromRow(rows[0]), true, nil
+}
+
+// renewAgentCert records an agent's renewed certificate. The one it renewed
+// with (usedFP) stays accepted: it has the same key.
+func (s *hubStore) renewAgentCert(ctx context.Context, name, usedFP, newFP string, notAfter time.Time) error {
+	return s.db.Exec(ctx, sqlStmt{SQL: `UPDATE agents SET cert_fp_prev = ?, cert_fp = ?, cert_not_after = ?, cert_renewed_at = ? WHERE name = ?`,
+		Args: []any{usedFP, newFP, notAfter.UTC().Format(time.RFC3339), nowText(), name}})
 }
 
 func (s *hubStore) revokeAgent(ctx context.Context, name string) error {
@@ -280,7 +298,8 @@ func agentFromRow(r sqlRow) hubAgentRow {
 		RevokedAt: r.str("revoked_at"), LastSeen: parseTime(r.str("last_seen")), StartedAt: parseTime(r.str("started_at")),
 		HeartbeatS: r.int("heartbeat_s"), Outbox: r.int("outbox"), token: r.str("token"),
 		Client: r.str("client"), Env: r.str("env"), RequireCert: r.int("require_cert") == 1, CertFP: r.str("cert_fp"),
-		CertNotAfter: parseTime(r.str("cert_not_after")), AcceptsCommands: r.int("accepts_commands") == 1}
+		CertNotAfter: parseTime(r.str("cert_not_after")), AcceptsCommands: r.int("accepts_commands") == 1,
+		CertFPPrev: r.str("cert_fp_prev"), CertRenewedAt: parseTime(r.str("cert_renewed_at")), CertAutoRenew: r.int("cert_auto_renew") == 1}
 	_ = json.Unmarshal([]byte(r.str("labels")), &a.Labels)
 	return a
 }
@@ -365,9 +384,9 @@ func (s *hubStore) heartbeatStmts(agent string, ev hubEvent, now string) []sqlSt
 		return nil
 	}
 	stmts := []sqlStmt{
-		{SQL: `UPDATE agents SET last_seen = ?, host = ?, version = ?, started_at = ?, outbox = ?, labels = ?, heartbeat_s = ?, accepts_commands = ? WHERE name = ?`,
+		{SQL: `UPDATE agents SET last_seen = ?, host = ?, version = ?, started_at = ?, outbox = ?, labels = ?, heartbeat_s = ?, accepts_commands = ?, cert_auto_renew = ? WHERE name = ?`,
 			Args: []any{now, ev.Host, ev.Version, inv.Started.UTC().Format(time.RFC3339Nano), int64(inv.Outbox),
-				jsonText(inv.Labels), inv.HeartbeatS, inv.AcceptsCommands, agent}},
+				jsonText(inv.Labels), inv.HeartbeatS, inv.AcceptsCommands, inv.CertRenew, agent}},
 		{SQL: `INSERT INTO heartbeats (agent, minute) VALUES (?, ?) ON CONFLICT DO NOTHING`,
 			Args: []any{agent, time.Now().UTC().Truncate(time.Minute).Format(time.RFC3339)}},
 		{SQL: `UPDATE deploys SET in_inventory = 0 WHERE agent = ?`, Args: []any{agent}},

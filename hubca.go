@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -111,20 +112,14 @@ type issuedCert struct {
 	NotAfter        time.Time
 }
 
-// issue makes a client certificate for an agent (CN and DNS name = agent).
+// issue makes a client certificate for an agent (CN and DNS name = agent),
+// with a new key.
 func (ca *hubCA) issue(agent string) (issuedCert, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return issuedCert{}, err
 	}
-	notAfter := time.Now().Add(agentCertValid)
-	if notAfter.After(ca.cert.NotAfter) {
-		notAfter = ca.cert.NotAfter
-	}
-	tmpl := &x509.Certificate{SerialNumber: randomSerial(), Subject: pkix.Name{CommonName: agent, OrganizationalUnit: []string{"nimdeploy agent"}},
-		DNSNames: []string{agent}, NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter,
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	ic, err := ca.issueFor(agent, &key.PublicKey)
 	if err != nil {
 		return issuedCert{}, err
 	}
@@ -132,9 +127,26 @@ func (ca *hubCA) issue(agent string) (issuedCert, error) {
 	if err != nil {
 		return issuedCert{}, err
 	}
+	ic.KeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}))
+	return ic, nil
+}
+
+// issueFor makes an agent's client certificate for a public key it already
+// has: renewing keeps the agent's key, which never leaves its server.
+func (ca *hubCA) issueFor(agent string, pub crypto.PublicKey) (issuedCert, error) {
+	notAfter := time.Now().Add(agentCertValid)
+	if notAfter.After(ca.cert.NotAfter) {
+		notAfter = ca.cert.NotAfter
+	}
+	tmpl := &x509.Certificate{SerialNumber: randomSerial(), Subject: pkix.Name{CommonName: agent, OrganizationalUnit: []string{"nimdeploy agent"}},
+		DNSNames: []string{agent}, NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter,
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, pub, ca.key)
+	if err != nil {
+		return issuedCert{}, err
+	}
 	return issuedCert{
 		CertPEM:     string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
-		KeyPEM:      string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})),
 		Fingerprint: certFingerprint(der),
 		NotAfter:    notAfter,
 	}, nil

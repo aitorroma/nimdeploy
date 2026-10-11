@@ -413,6 +413,7 @@ func (h *hubServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+hubEventsPath, h.handleEvents)
 	mux.HandleFunc("GET "+hubCommandsPath, h.handleCommands)
+	mux.HandleFunc("POST "+hubCertPath, h.handleCertRenew)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()

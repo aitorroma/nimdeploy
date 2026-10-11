@@ -134,6 +134,8 @@ type hubInventory struct {
 	HeartbeatS int64 `json:"heartbeat_s"`
 	// AcceptsCommands: the agent runs deploys and rollbacks the hub asks for.
 	AcceptsCommands bool `json:"accepts_commands,omitempty"`
+	// CertRenew: the agent renews its hub client certificate before it expires.
+	CertRenew bool `json:"cert_renew,omitempty"`
 }
 
 type hubDeploy struct {
@@ -192,6 +194,7 @@ func newHubAgent(r *Runner, cfg HubConfig, logDir string) *hubAgent {
 	}
 	go a.loop()
 	go a.commandLoop()
+	go a.certLoop()
 	return a
 }
 
@@ -461,7 +464,7 @@ func (r *Runner) hubInventory() hubInventory {
 	r.mu.Lock()
 	cfg := r.cfg
 	r.mu.Unlock()
-	inv := hubInventory{Labels: copyLabels(cfg.Labels), AcceptsCommands: cfg.Hub.AcceptCommands}
+	inv := hubInventory{Labels: copyLabels(cfg.Labels), AcceptsCommands: cfg.Hub.AcceptCommands, CertRenew: cfg.Hub.CertFile != ""}
 	g := r.gauges(cfg.DeployNames())
 	for _, name := range cfg.DeployNames() {
 		d := cfg.Deploy[name]

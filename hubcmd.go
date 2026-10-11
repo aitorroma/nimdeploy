@@ -115,7 +115,7 @@ func (h *hubServer) authAgent(w http.ResponseWriter, r *http.Request, signed []b
 	}
 	if a.RequireCert {
 		fp := requestCertFingerprint(r)
-		if fp == "" || !hmac.Equal([]byte(fp), []byte(a.CertFP)) {
+		if fp == "" || !(hmac.Equal([]byte(fp), []byte(a.CertFP)) || (a.CertFPPrev != "" && hmac.Equal([]byte(fp), []byte(a.CertFPPrev)))) {
 			return refuse("this agent's client certificate is required")
 		}
 	}

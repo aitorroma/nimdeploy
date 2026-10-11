@@ -30,6 +30,7 @@ const (
 	notifyAgentOffline    = "agent.offline"
 	notifyAgentBack       = "agent.back"
 	notifyCertExpiring    = "cert.expiring"
+	notifyCertRenewed     = "cert.renewed"
 	notifyCommandRefused  = "command.refused"
 
 	notifyWatchEvery = 30 * time.Second
@@ -37,7 +38,7 @@ const (
 )
 
 var notifyEvents = []string{notifyDeployFailed, notifyDeployRecovered, notifyDeploySuccess, notifyDeployRejected,
-	notifyAgentOffline, notifyAgentBack, notifyCertExpiring, notifyCommandRefused}
+	notifyAgentOffline, notifyAgentBack, notifyCertExpiring, notifyCertRenewed, notifyCommandRefused}
 
 var notifyKinds = []string{"slack", "discord", "telegram", "webhook", "email"}
 
@@ -186,8 +187,8 @@ func (n hubNotice) title(lang string) string {
 		where = " · " + where
 	}
 	switch n.Event {
-	case notifyAgentOffline, notifyAgentBack, notifyCertExpiring:
-		if n.Event == notifyCertExpiring {
+	case notifyAgentOffline, notifyAgentBack, notifyCertExpiring, notifyCertRenewed:
+		if n.Event == notifyCertExpiring || n.Event == notifyCertRenewed {
 			return hubT(lang, "nt."+n.Event, n.Agent, n.CertNotAfter.Format("2006-01-02")) + where
 		}
 		return hubT(lang, "nt."+n.Event, n.Agent) + where

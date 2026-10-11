@@ -217,7 +217,8 @@ Telegram, any URL (JSON) or email. It has two parts:
 | Run succeeded | every successful run |
 | Webhook rejected | a webhook was refused (bad signature, wrong repository…) |
 | Server offline / back online | an agent misses three heartbeats, and when it returns |
-| Certificate expiring | an agent's certificate expires within 30 days |
+| Certificate expiring | an agent's certificate expires within 30 days (agents renew it 40 days before, so this means renewing failed) |
+| Certificate renewed | an agent renewed its certificate |
 | Command refused | the agent refused a run or rollback from the hub |
 
 For example, one rule for every production failure to the on-call Telegram
@@ -260,6 +261,31 @@ nimdeploy hub serve -tls-cert hub.pem -tls-key hub.key -agent-ca-dir /var/lib/ni
 - The agent's token still signs every request; the certificate is a second
   factor tied to the server.
 - `-tls-client-ca` (your own CA) still works alongside it.
+
+### Renewal
+
+Agents renew their certificate by themselves, 40 days before it expires. The
+agent asks the hub for a new certificate **for the key it already has**,
+over a connection made with the current certificate and signed with its
+token, and writes it over `cert_file`. The token and `key_file` don't change,
+the key never leaves the server, and nothing needs copying. The **Agents**
+page shows "renews itself" under the date; older agents show "renewed by
+hand" until they're updated.
+
+To renew it now, on the server:
+
+```bash
+sudo nimdeploy renew-cert              # the token comes from secrets.env
+sudo nimdeploy renew-cert -if-needed   # only within 40 days of expiring
+```
+
+- The service uses the new file without a restart.
+- The certificate it renewed with stays accepted (same key) until the next
+  renewal, so connections already open keep working.
+- `cert_file` must be writable by the user the service runs as.
+- An expired certificate can't connect, so it can't renew either: give the
+  agent a new token from the dashboard, as before. That also issues a new
+  key, which is what to do if the server's key may have leaked.
 
 ## Commands from the hub
 

@@ -13,6 +13,7 @@ nimdeploy [flags] status [-json] [-wide] [-l key=value]... [deploy]
 nimdeploy [flags] history [-n 20] [-json] [-l key=value]... [deploy]
 nimdeploy [flags] nginx [-api]        print nginx location blocks for the hooks
 nimdeploy [flags] woocommerce add|register|status|replay|note
+nimdeploy [flags] renew-cert [-if-needed]   renew the [hub] client certificate (same key)
 nimdeploy hub serve|agent add|list|revoke|healthcheck   (no config file; see the hub guide)
 ```
 
@@ -107,6 +108,13 @@ deploys with that label (repeat it to require several).
 ## hub
 
 The central console: see [Central hub](../guides/hub.md#command-line).
+
+## renew-cert
+
+Asks the hub for a new `[hub]` client certificate for the key the server
+already has and writes it over `cert_file`. The service does it by itself 40
+days before it expires; this does it now (`-if-needed`: only within those 40
+days). See [renewal](../guides/hub.md#renewal).
 
 ## history
 

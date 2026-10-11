@@ -38,6 +38,8 @@ const usage = `Usage:
                                         print a Password Pusher link for a secret
   nimdeploy [flags] rollback [-to SHA] [-n] [-f] <deploy>
                                         deploy the last good commit again
+  nimdeploy [flags] renew-cert [-if-needed]
+                                        renew the [hub] client certificate now (same key)
   nimdeploy [flags] status [-json] [deploy]
                                         show deploy status
   nimdeploy [flags] history [-n 20] [-json] [deploy]
@@ -135,6 +137,8 @@ func main() {
 		os.Exit(cliPwPush(cfg, *envFile, args))
 	case "rollback":
 		os.Exit(cliRollback(cfg, *envFile, args))
+	case "renew-cert":
+		os.Exit(cliRenewCert(cfg, *envFile, args))
 	case "woocommerce":
 		os.Exit(cliWooCommerce(cfg, *configPath, *envFile, args))
 	default:

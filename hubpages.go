@@ -920,6 +920,7 @@ func (h *hubServer) commandRows(ctx context.Context, lang, agent, deploy string)
 type agentCard struct {
 	Name, Where, Color, Initials, State, StateLabel string
 	Host, Version, LastSeen, UpSince, Waiting, Cert string
+	CertNote, CertTitle                             string
 	Old, Pending, Commands                          bool
 	Outbox                                          bool
 	Beats                                           []bool
@@ -962,6 +963,15 @@ func (h *hubServer) agentCards(ctx context.Context, lang string, agents []hubAge
 		c.Cert = hubT(lang, "ag.no_cert")
 		if a.RequireCert {
 			c.Cert = hubT(lang, "ag.cert_until", a.CertNotAfter.Format("2006-01-02"))
+			switch {
+			case a.CertAutoRenew:
+				c.CertNote = hubT(lang, "ag.cert_auto")
+			case !a.LastSeen.IsZero():
+				c.CertNote, c.CertTitle = hubT(lang, "ag.cert_manual"), hubT(lang, "ag.cert_manual_d")
+			}
+			if !a.CertRenewedAt.IsZero() {
+				c.CertTitle = hubT(lang, "ag.cert_renewed", hubT(lang, "app.ago", agoIn(lang, now.Sub(a.CertRenewedAt))))
+			}
 		}
 		c.CommandsLabel = hubT(lang, map[bool]string{true: "ag.commands_on", false: "ag.commands_off"}[a.AcceptsCommands])
 		c.Old = a.Version != "" && version != "dev" && olderVersion(a.Version, version)
