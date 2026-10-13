@@ -335,8 +335,9 @@ func (a *hubAgent) runCommand(c hubCommand) {
 	by := "hub:" + firstNonEmpty(c.By, "unknown")
 	t := Trigger{Source: TriggerHub, Provider: d.Provider, Repository: d.Repository, Commit: c.Commit, Pusher: by,
 		Delivery: hubCommandDelivery + c.ID}
-	if _, git := providers[d.Provider]; git {
-		t.Ref, t.Branch = "refs/heads/"+d.Branch, d.Branch
+	_, git := providers[d.Provider]
+	if git {
+		d.setRef(&t, "")
 	}
 	switch c.Action {
 	case hubCommandActionRun:
@@ -346,19 +347,30 @@ func (a *hubAgent) runCommand(c hubCommand) {
 			return
 		}
 		t.Params = params
+		if git && d.Tags != "" && t.Commit == "" {
+			// Run again: the version deployed last, not the branch head.
+			last, ok := r.lastTagged(d.Name)
+			if !ok {
+				refuse("no tag deployed yet: push a tag matching " + d.Tags)
+				return
+			}
+			t.Commit = last.Commit
+			d.setRef(&t, last.Tag)
+		}
 	case hubCommandActionRB:
-		if _, git := providers[d.Provider]; !git {
+		if !git {
 			refuse("rollback needs a git deploy")
 			return
 		}
 		t.Source = TriggerRollback
 		if t.Commit == "" {
-			commit, _, err := r.RollbackTarget(d.Name)
+			target, err := r.RollbackTarget(d.Name)
 			if err != nil {
 				refuse(err.Error())
 				return
 			}
-			t.Commit = commit
+			t.Commit = target.Commit
+			d.setRef(&t, target.Tag)
 		}
 	default:
 		refuse("unknown action " + c.Action)

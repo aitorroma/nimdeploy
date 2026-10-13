@@ -159,6 +159,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `provider` | `github` | `github`, `gitea`, `forgejo`, `gitlab`, `bitbucket` ([details](../guides/providers.md)), `generic` for any JSON webhook ([details](../guides/generic.md)), `woocommerce` ([details](../guides/woocommerce.md)), `stripe`, `paddle`, `lemonsqueezy` ([details](../guides/payments.md)) |
 | `repository` | required | repository the pushes must come from, as the provider names it; any other is ignored. Optional for `generic` |
 | `branch` | `main` | pushes to other branches are ignored. Not for `generic` |
+| `tags` | – | deploy on tags matching this pattern (`"v*"`) instead of on pushes to `branch`: [production from tags](../guides/tags.md). Git providers only |
 | `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
 | `command` | required, unless `ansible` | run directly, no shell |
 | `args` | – | arguments; for an inline script use `command = "/bin/bash"`, `args = ["-c", "..."]` |

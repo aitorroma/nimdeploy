@@ -1063,7 +1063,7 @@ func TestGitLabIgnoresTagPush(t *testing.T) {
 	body := []byte(`{"object_kind":"tag_push","ref":"refs/tags/v1","after":"` + sha1 + `","project":{"path_with_namespace":"acme/agency"}}`)
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, jsonRequest("/hooks/agency", body, map[string]string{"X-Gitlab-Event": "Tag Push Hook", "X-Gitlab-Token": testSecret}))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "not handled") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "is not branch main") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }

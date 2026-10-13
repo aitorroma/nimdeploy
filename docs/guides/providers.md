@@ -43,8 +43,8 @@ repository) in Settings → Deploy keys.
   loopback` (or `private`, or the host name). *Test delivery* sends a real
   push of the default branch, so it deploys.
 - **GitLab:** the secret token travels as is (over HTTPS), not as a
-  signature. Tag pushes are ignored. *Test → Push events* sends a real push
-  and deploys.
+  signature. Tag pushes count only for deploys with [`tags`](tags.md) (tick
+  *Tag push events* too). *Test → Push events* sends a real push and deploys.
 - **Bitbucket:** set the secret (optional in Bitbucket, required here). One
   push can update several branches; only the deploy's branch counts. Data
   Center's *Test connection* gets `pong`.

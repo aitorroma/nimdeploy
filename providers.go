@@ -110,6 +110,7 @@ func parseGitHub(r *http.Request, body []byte) (hookEvent, error) {
 			Name string `json:"name"`
 		} `json:"pusher"`
 		HeadCommit struct {
+			ID      string `json:"id"`
 			Message string `json:"message"`
 		} `json:"head_commit"`
 	}
@@ -117,7 +118,7 @@ func parseGitHub(r *http.Request, body []byte) (hookEvent, error) {
 		return ev, err
 	}
 	ev.Repository, ev.Pusher = p.Repository.FullName, p.Pusher.Name
-	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: p.Deleted || zeroSHA(p.After), Message: p.HeadCommit.Message}}
+	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: tagCommit(p.Ref, p.After, p.HeadCommit.ID), Deleted: p.Deleted || zeroSHA(p.After), Message: p.HeadCommit.Message}}
 	return ev, nil
 }
 
@@ -141,7 +142,8 @@ func parseGitea(r *http.Request, body []byte) (hookEvent, error) {
 			Login    string `json:"login"`
 			Username string `json:"username"`
 		} `json:"pusher"`
-		HeadCommit struct {
+		HeadCommit *struct {
+			ID      string `json:"id"`
 			Message string `json:"message"`
 		} `json:"head_commit"`
 	}
@@ -150,7 +152,11 @@ func parseGitea(r *http.Request, body []byte) (hookEvent, error) {
 	}
 	ev.Repository = p.Repository.FullName
 	ev.Pusher = firstNonEmpty(p.Pusher.Login, p.Pusher.Username)
-	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: zeroSHA(p.After), Message: p.HeadCommit.Message}}
+	var headID, msg string
+	if p.HeadCommit != nil {
+		headID, msg = p.HeadCommit.ID, p.HeadCommit.Message
+	}
+	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: tagCommit(p.Ref, p.After, headID), Deleted: zeroSHA(p.After), Message: msg}}
 	return ev, nil
 }
 
@@ -176,14 +182,14 @@ func parseGitLab(r *http.Request, body []byte) (hookEvent, error) {
 		} `json:"commits"`
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
-		if ev.Name == "Push Hook" {
+		if ev.Name == "Push Hook" || ev.Name == "Tag Push Hook" {
 			return ev, err
 		}
 		return ev, nil // some other event we don't handle anyway
 	}
-	// "Push Hook", or a system hook with object_kind push; tag pushes are
-	// object_kind tag_push.
-	ev.Push = p.ObjectKind == "push"
+	// "Push Hook" / "Tag Push Hook", or a system hook with object_kind push
+	// or tag_push.
+	ev.Push = p.ObjectKind == "push" || p.ObjectKind == "tag_push"
 	if !ev.Push {
 		if ev.Name == "" {
 			ev.Name = p.ObjectKind
@@ -198,7 +204,11 @@ func parseGitLab(r *http.Request, body []byte) (hookEvent, error) {
 			msg = c.Message
 		}
 	}
-	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: p.After, Deleted: zeroSHA(p.After) || p.CheckoutSHA == nil, Message: msg}}
+	commit := p.After
+	if p.ObjectKind == "tag_push" && p.CheckoutSHA != nil {
+		commit = *p.CheckoutSHA // after is the tag object for an annotated tag
+	}
+	ev.Pushes = []pushInfo{{Ref: p.Ref, Commit: commit, Deleted: zeroSHA(p.After) || p.CheckoutSHA == nil, Message: msg}}
 	return ev, nil
 }
 
@@ -239,12 +249,22 @@ func parseBitbucket(r *http.Request, body []byte) (hookEvent, error) {
 		ev.Push = true
 		ev.Repository = p.Repository.FullName
 		ev.Pusher = firstNonEmpty(p.Actor.Nickname, p.Actor.DisplayName)
+		refName := func(r *ref) string {
+			switch r.Type {
+			case "branch":
+				return "refs/heads/" + r.Name
+			case "tag", "annotated_tag":
+				return "refs/tags/" + r.Name
+			}
+			return ""
+		}
 		for _, c := range p.Push.Changes {
 			switch {
-			case c.New != nil && c.New.Type == "branch":
-				ev.Pushes = append(ev.Pushes, pushInfo{Ref: "refs/heads/" + c.New.Name, Commit: c.New.Target.Hash, Message: c.New.Target.Message})
-			case c.New == nil && c.Old != nil && c.Old.Type == "branch":
-				ev.Pushes = append(ev.Pushes, pushInfo{Ref: "refs/heads/" + c.Old.Name, Deleted: true})
+			case c.New != nil && refName(c.New) != "":
+				// A tag's target is the commit it points to.
+				ev.Pushes = append(ev.Pushes, pushInfo{Ref: refName(c.New), Commit: c.New.Target.Hash, Message: c.New.Target.Message})
+			case c.New == nil && c.Old != nil && refName(c.Old) != "":
+				ev.Pushes = append(ev.Pushes, pushInfo{Ref: refName(c.Old), Deleted: true})
 			}
 		}
 	case "repo:refs_changed":
@@ -283,6 +303,15 @@ func parseBitbucket(r *http.Request, body []byte) (hookEvent, error) {
 		}
 	}
 	return ev, nil
+}
+
+// tagCommit is the commit a push deployed: for a tag, the head commit the
+// host reports (after is the tag object when the tag is annotated).
+func tagCommit(ref, after, head string) string {
+	if strings.HasPrefix(ref, "refs/tags/") && head != "" {
+		return head
+	}
+	return after
 }
 
 // zeroSHA reports an all-zero commit id, which git hosts use for a deleted ref.

@@ -52,9 +52,14 @@ artisan() { run php artisan "$@"; }
 
 # --- Code -------------------------------------------------------------------
 # Fast-forward only: stop if the checkout has local changes or diverged.
-# Deploys the pushed commit, or the branch head for a manual run.
+# Deploys the pushed commit (or tag), or the branch head for a manual run.
 host git fetch origin "$BRANCH"
-host git merge --ff-only "${DEPLOY_COMMIT:-origin/$BRANCH}"
+TARGET="${DEPLOY_COMMIT:-origin/$BRANCH}"
+if [[ -n "${DEPLOY_TAG:-}" ]]; then # deploys with tags = "v*": the version pushed
+	host git fetch origin "+refs/tags/$DEPLOY_TAG:refs/tags/$DEPLOY_TAG"
+	TARGET="${DEPLOY_COMMIT:-refs/tags/$DEPLOY_TAG}"
+fi
+host git merge --ff-only "$(git rev-parse --verify "$TARGET^{commit}")"
 
 if [[ -n "$COMPOSE_SERVICE" ]]; then
 	# The checkout is owned by a host user; without this git (used by

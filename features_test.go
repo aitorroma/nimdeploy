@@ -200,8 +200,8 @@ api_token_env = "TEST_API_TOKEN"
 	e.waitIdle(t)
 	e.push(t, pushOpts{delivery: "r2", commit: sha2})
 	e.waitIdle(t)
-	if c, _, err := e.runner.RollbackTarget("agency"); err != nil || c != sha1 {
-		t.Fatalf("target %s %v", c, err)
+	if target, err := e.runner.RollbackTarget("agency"); err != nil || target.Commit != sha1 {
+		t.Fatalf("target %s %v", target.Commit, err)
 	}
 	if rec := e.request(http.MethodPost, "/rollback/agency", "", ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("rollback without token: %d", rec.Code)

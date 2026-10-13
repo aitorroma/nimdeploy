@@ -71,7 +71,8 @@ sequenceDiagram
 | `DEPLOY_PROVIDER` | `github` |
 | `DEPLOY_REPOSITORY` | `acme/shop` |
 | `DEPLOY_BRANCH` | `main` |
-| `DEPLOY_REF` | `refs/heads/main` |
+| `DEPLOY_REF` | `refs/heads/main` (`refs/tags/v1.2.0` for a [tag](guides/tags.md)) |
+| `DEPLOY_TAG` | `v1.2.0` for deploys with [`tags`](guides/tags.md), else empty |
 | `DEPLOY_COMMIT` | `9f1c2e7…` (empty for `nimdeploy run` without `-commit`) |
 | `DEPLOY_PUSHER` | `ana` |
 | `DEPLOY_DELIVERY` | the provider's delivery ID |

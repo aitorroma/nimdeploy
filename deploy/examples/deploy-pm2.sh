@@ -9,7 +9,12 @@ APP="${PM2_APP:-$DEPLOY_NAME}"   # pm2 process name, defaults to the deploy name
 
 git fetch origin "$DEPLOY_BRANCH"
 # Manual runs (`nimdeploy run`) may have no commit: use the branch head.
-git reset --hard "${DEPLOY_COMMIT:-origin/$DEPLOY_BRANCH}"
+TARGET="${DEPLOY_COMMIT:-origin/$DEPLOY_BRANCH}"
+if [[ -n "${DEPLOY_TAG:-}" ]]; then # deploys with tags = "v*": the version pushed
+	git fetch origin "+refs/tags/$DEPLOY_TAG:refs/tags/$DEPLOY_TAG"
+	TARGET="${DEPLOY_COMMIT:-refs/tags/$DEPLOY_TAG}"
+fi
+git reset --hard "$TARGET^{commit}"
 
 npm ci
 npm run build

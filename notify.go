@@ -202,7 +202,9 @@ func (n *Notifier) message(st State, recovered bool, logPath string, tail []stri
 	case st.Repository != "":
 		parts = append(parts, st.Repository)
 	}
-	if st.Commit != "" {
+	if st.Tag != "" {
+		parts = append(parts, "tag "+refLabel(st.Tag, st.Commit))
+	} else if st.Commit != "" {
 		parts = append(parts, "commit "+shortSHA(st.Commit))
 	}
 	if ref := eventRef(st); ref != "" {

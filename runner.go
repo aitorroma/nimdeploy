@@ -64,6 +64,7 @@ type Trigger struct {
 	Repository string
 	Ref        string
 	Branch     string
+	Tag        string // the tag deployed, for deploys with tags
 	Commit     string
 	Message    string // first line of the commit message, when known
 	Pusher     string
@@ -96,6 +97,7 @@ type State struct {
 	Delivery   string            `json:"delivery,omitempty"`
 	Repository string            `json:"repository,omitempty"`
 	Branch     string            `json:"branch,omitempty"`
+	Tag        string            `json:"tag,omitempty"`
 	Commit     string            `json:"commit,omitempty"`
 	Message    string            `json:"message,omitempty"` // commit title
 	Pusher     string            `json:"pusher,omitempty"`
@@ -360,6 +362,7 @@ func (r *Runner) startLocked(d *DeployConfig, t Trigger) (*State, error) {
 		Delivery:   t.Delivery,
 		Repository: t.Repository,
 		Branch:     t.Branch,
+		Tag:        t.Tag,
 		Commit:     t.Commit,
 		Message:    t.Message,
 		Pusher:     t.Pusher,
@@ -441,6 +444,9 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	logf("provider=%s", t.Provider)
 	logf("repository=%s", t.Repository)
 	logf("branch=%s", t.Branch)
+	if t.Tag != "" {
+		logf("tag=%s", t.Tag)
+	}
 	logf("commit=%s", t.Commit)
 	logf("pusher=%s", t.Pusher)
 	logf("delivery=%s", t.Delivery)
@@ -733,39 +739,41 @@ func (r *Runner) healthCheck(d *DeployConfig, logf func(string, ...any)) error {
 
 // RollbackTarget is the commit of the most recent successful deploy other
 // than the latest run's: what was live before the latest change.
-func (r *Runner) RollbackTarget(name string) (commit, fromLog string, err error) {
+func (r *Runner) RollbackTarget(name string) (State, error) {
 	h, err := r.History(name, 0)
 	if err != nil {
-		return "", "", err
+		return State{}, err
 	}
 	return rollbackTargetIn(h)
 }
 
-// rollbackTargetIn picks the target from a history, newest first.
-func rollbackTargetIn(h []State) (commit, fromLog string, err error) {
+// rollbackTargetIn picks the target from a history, newest first: its
+// Commit, its Tag (deploys with tags) and its Log.
+func rollbackTargetIn(h []State) (State, error) {
 	if len(h) == 0 {
-		return "", "", errors.New("no deploys in the history")
+		return State{}, errors.New("no deploys in the history")
 	}
 	latest := h[0].Commit
 	for _, st := range h {
 		if st.Status == StatusSuccess && st.Commit != "" && st.Commit != latest {
-			return st.Commit, st.Log, nil
+			return st, nil
 		}
 	}
-	return "", "", fmt.Errorf("no earlier successful deploy with another commit in the kept logs (latest: %s)", dash(shortSHA(latest)))
+	return State{}, fmt.Errorf("no earlier successful deploy with another commit in the kept logs (latest: %s)", dash(shortSHA(latest)))
 }
 
 // autoRollback redeploys the last good commit after a failed deploy.
 func (r *Runner) autoRollback(d *DeployConfig, failed Trigger) {
-	commit, from, err := r.RollbackTarget(d.Name)
+	target, err := r.RollbackTarget(d.Name)
 	if err != nil {
 		log.Printf("deploy=%s rollback_on_failure: nothing to roll back to: %v", d.Name, err)
 		return
 	}
-	log.Printf("deploy=%s rollback_on_failure: redeploying %s (deployed by %s)", d.Name, shortSHA(commit), from)
-	_, err = r.Submit(d.Name, Trigger{Source: TriggerRollback, Provider: d.Provider, Repository: d.Repository,
-		Ref: "refs/heads/" + d.Branch, Branch: d.Branch, Commit: commit,
-		Pusher: "auto, " + dash(shortSHA(failed.Commit)) + " failed"})
+	log.Printf("deploy=%s rollback_on_failure: redeploying %s (deployed by %s)", d.Name, refLabel(target.Tag, target.Commit), target.Log)
+	t := Trigger{Source: TriggerRollback, Provider: d.Provider, Repository: d.Repository, Commit: target.Commit,
+		Pusher: "auto, " + dash(refLabel(failed.Tag, failed.Commit)) + " failed"}
+	d.setRef(&t, target.Tag)
+	_, err = r.Submit(d.Name, t)
 	if err != nil {
 		log.Printf("deploy=%s rollback_on_failure: %v", d.Name, err)
 	}
@@ -1027,6 +1035,7 @@ func (r *Runner) commandEnv(d *DeployConfig, t Trigger) []string {
 		"DEPLOY_REPOSITORY="+t.Repository,
 		"DEPLOY_REF="+t.Ref,
 		"DEPLOY_BRANCH="+t.Branch,
+		"DEPLOY_TAG="+t.Tag,
 		"DEPLOY_COMMIT="+t.Commit,
 		"DEPLOY_PUSHER="+t.Pusher,
 		"DEPLOY_DELIVERY="+t.Delivery,

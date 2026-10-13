@@ -34,6 +34,8 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
 - **One deploy at a time** per app; pushes during a deploy are queued and only
   the latest runs. Exact pushed commit, timeout that kills the whole process group.
 - **A log file per deploy**, `latest.log`, `nimdeploy history`, automatic retention.
+- **Production from tags**: `tags = "v*"` deploys a version when a tag (or a
+  release) is created, instead of every push to the branch; rollback goes back a version.
 - **No root**: user service, or a system unit run by a service account that a
   named operator controls with a minimal sudoers rule
   ([`contrib/setup-root.sh`](contrib/setup-root.sh)).

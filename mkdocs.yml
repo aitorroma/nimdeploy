@@ -93,6 +93,7 @@ nav:
       - Wait for CI: guides/wait-for-ci.md
       - Notifications and commit statuses: guides/notifications.md
       - Git providers: guides/providers.md
+      - Production from tags (releases): guides/tags.md
       - Generic webhooks and Ansible: guides/generic.md
       - Deploy from a WooCommerce sale: guides/woocommerce.md
       - Stripe, Paddle and Lemon Squeezy: guides/payments.md

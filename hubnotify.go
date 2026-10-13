@@ -203,8 +203,8 @@ func (n hubNotice) lines(lang string) []string {
 		if st.Repository != "" {
 			parts = append(parts, strings.Trim(st.Repository+"@"+st.Branch, "@"))
 		}
-		if st.Commit != "" {
-			c := shortSHA(st.Commit)
+		if st.Commit != "" || st.Tag != "" {
+			c := refLabel(st.Tag, st.Commit)
 			if st.Message != "" {
 				c += " " + st.Message
 			}

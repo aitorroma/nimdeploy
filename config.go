@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -145,7 +146,11 @@ type DeployConfig struct {
 	Path       string `toml:"path"`
 	Repository string `toml:"repository"`
 	Branch     string `toml:"branch"`
-	SecretEnv  string `toml:"secret_env"`
+	// Tags makes a git deploy run on tags matching this pattern ("v*")
+	// instead of on pushes to the branch: commits to the branch don't
+	// deploy, creating a tag (or a release with a new tag) does.
+	Tags      string `toml:"tags"`
+	SecretEnv string `toml:"secret_env"`
 
 	WorkingDirectory string `toml:"working_directory"`
 	Command          string `toml:"command"`
@@ -637,6 +642,14 @@ func (d *DeployConfig) validateProvider() error {
 	}
 	if !paymentProvider(d.Provider) && len(d.Events) > 0 {
 		return fmt.Errorf("events is only for provider = stripe, paddle or lemonsqueezy")
+	}
+	if d.Tags != "" {
+		if _, git := providers[d.Provider]; !git {
+			return fmt.Errorf("tags is for git providers (github, gitlab, bitbucket, gitea, forgejo)")
+		}
+		if _, err := path.Match(d.Tags, ""); err != nil || strings.HasPrefix(d.Tags, "refs/") {
+			return fmt.Errorf("tags = %q: a tag name pattern like \"v*\" (* ? [...])", d.Tags)
+		}
 	}
 	if d.Provider == providerWooCommerce {
 		return d.validateWooCommerce()

@@ -101,12 +101,13 @@ func (c *client) do(method, path string, body any, out any) (int, error) {
 func cliRun(cfg *Config, envFile string, args []string) int {
 	fset := flag.NewFlagSet("run", flag.ExitOnError)
 	commit := fset.String("commit", "", "commit to deploy (default: the script decides, usually the branch head)")
+	tag := fset.String("tag", "", "tag to deploy (deploys with tags = \"v*\" need it, or -commit)")
 	follow := fset.Bool("f", false, "follow the log until the deploy finishes; exit code reflects the result")
 	params := paramFlag{}
 	fset.Var(params, "p", "param for the deploy, NAME=VALUE (repeatable; validated like webhook params)")
 	fset.Parse(args)
 	if fset.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: nimdeploy run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>")
+		fmt.Fprintln(os.Stderr, "usage: nimdeploy run [-commit SHA | -tag v1.2.0] [-p NAME=VALUE]... [-f] <deploy>")
 		return 2
 	}
 	name := fset.Arg(0)
@@ -125,7 +126,7 @@ func cliRun(cfg *Config, envFile string, args []string) int {
 		user = os.Getenv("USER")
 	}
 	var res SubmitResult
-	if _, err := c.do(http.MethodPost, "/deploy/"+name, manualRequest{Commit: *commit, User: user, Params: params}, &res); err != nil {
+	if _, err := c.do(http.MethodPost, "/deploy/"+name, manualRequest{Commit: *commit, Tag: *tag, User: user, Params: params}, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -450,7 +451,7 @@ func cliHistory(cfg *Config, envFile string, args []string) int {
 
 func cliRollback(cfg *Config, envFile string, args []string) int {
 	fset := flag.NewFlagSet("rollback", flag.ExitOnError)
-	to := fset.String("to", "", "commit to go back to (default: the last successful deploy before the latest one)")
+	to := fset.String("to", "", "commit or tag to go back to (default: the last successful deploy before the latest one)")
 	follow := fset.Bool("f", false, "follow the log until it finishes; exit code reflects the result")
 	dry := fset.Bool("n", false, "only show which commit it would deploy")
 	fset.Parse(args)
@@ -478,21 +479,25 @@ func cliRollback(cfg *Config, envFile string, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		commit, from, err := rollbackTargetIn(h)
+		target, err := rollbackTargetIn(h)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Printf("%s: would deploy %s (deployed successfully by %s)\n", name, commit, from)
+		fmt.Printf("%s: would deploy %s (deployed successfully by %s)\n", name, refLabel(target.Tag, target.Commit), target.Log)
 		return 0
 	}
 	user := firstNonEmpty(os.Getenv("SUDO_USER"), os.Getenv("USER"), "cli")
 	var res SubmitResult
-	if _, err := c.do(http.MethodPost, "/rollback/"+name, manualRequest{Commit: *to, User: user}, &res); err != nil {
+	req := manualRequest{Commit: *to, User: user}
+	if *to != "" && !shaRe.MatchString(*to) {
+		req.Commit, req.Tag = "", *to // a tag, like v1.1.0
+	}
+	if _, err := c.do(http.MethodPost, "/rollback/"+name, req, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("%s: rolling back to %s (%s, log %s)\n", name, shortSHA(res.State.Commit), res.Result, res.State.Log)
+	fmt.Printf("%s: rolling back to %s (%s, log %s)\n", name, dash(refLabel(res.State.Tag, res.State.Commit)), res.Result, res.State.Log)
 	if res.Result == ResultQueued {
 		fmt.Printf("  queued: it runs after the current deploy (queued commit %s)\n", shortSHA(res.State.Queued.Commit))
 		return 0
@@ -516,8 +521,8 @@ func eventRef(st State) string {
 
 // commitOrEvent fills the COMMIT column: the commit, or what the event was about.
 func commitOrEvent(st State) string {
-	if st.Commit != "" {
-		return shortSHA(st.Commit)
+	if st.Commit != "" || st.Tag != "" {
+		return refLabel(st.Tag, st.Commit)
 	}
 	return eventRef(st)
 }

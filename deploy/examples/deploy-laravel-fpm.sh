@@ -59,8 +59,13 @@ if [[ ! -d "$APP_DIR/.git" ]]; then
 fi
 cd "$APP_DIR"
 step git fetch --quiet --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+TARGET=${DEPLOY_COMMIT:-origin/$BRANCH}
+if [[ -n "${DEPLOY_TAG:-}" ]]; then # deploys with tags = "v*": the version pushed
+	step git fetch --quiet origin "+refs/tags/$DEPLOY_TAG:refs/tags/$DEPLOY_TAG"
+	TARGET=${DEPLOY_COMMIT:-refs/tags/$DEPLOY_TAG}
+fi
 # Untracked files (.env, storage/*) are kept; tracked files match the commit.
-step git reset --quiet --hard "${DEPLOY_COMMIT:-origin/$BRANCH}"
+step git reset --quiet --hard "$TARGET^{commit}"
 echo "code at $(git log --oneline -1)"
 
 if [[ ! -f .env ]]; then

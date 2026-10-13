@@ -583,13 +583,13 @@ func timelineItems(lang string, d hubData, events []hubEventRow, limit int) []tl
 			st := ""
 			if e.State != nil {
 				st = e.State.Status
-				it.Sub = strings.Join(nonEmpty(shortSHA(e.State.Commit), e.State.Message, e.State.Duration), " · ")
+				it.Sub = strings.Join(nonEmpty(refLabel(e.State.Tag, e.State.Commit), e.State.Message, e.State.Duration), " · ")
 			}
 			it.Node, it.What = statusCls(st), badgeHTML(lang, st)
 		case hubEventDeployStart:
 			it.Node, it.What = "run", template.HTML(template.HTMLEscapeString(hubT(lang, "ev.started")))
 			if e.State != nil {
-				it.Sub = strings.Join(nonEmpty(shortSHA(e.State.Commit), e.State.Pusher), " · ")
+				it.Sub = strings.Join(nonEmpty(refLabel(e.State.Tag, e.State.Commit), e.State.Pusher), " · ")
 			}
 		case hubEventRejected:
 			it.Node, it.What, it.Sub = "wait", template.HTML(template.HTMLEscapeString(hubT(lang, "ev.rejected"))), e.Reason
@@ -658,7 +658,7 @@ func kindOf(v hubView) string {
 func (h *hubServer) appRowOf(lang string, d hubData, v hubView) appRow {
 	now := time.Now()
 	row := appRow{Name: v.Deploy, Kind: kindOf(v), Href: deployHref(v.Agent, v.Deploy), Stripe: statusCls(v.State.Status), Badge: badgeHTML(lang, v.State.Status),
-		Commit: shortSHA(v.State.Commit), Msg: v.State.Message, Schedule: v.Schedule, By: v.State.Pusher, ByInit: initialsOf(v.State.Pusher),
+		Commit: refLabel(v.State.Tag, v.State.Commit), Msg: v.State.Message, Schedule: v.Schedule, By: v.State.Pusher, ByInit: initialsOf(v.State.Pusher),
 		Took: v.State.Duration, Hist: histOf(d.recent[[2]string{v.Agent, v.Deploy}]), HistTitle: hubT(lang, "app.last_runs")}
 	if v.State.Pusher == "" {
 		row.ByInit = ""
@@ -825,8 +825,8 @@ func (h *hubServer) pageDeploy(w http.ResponseWriter, r *http.Request, who strin
 	}
 	commit := "—"
 	switch {
-	case st.Commit != "":
-		commit = strings.TrimSpace(shortSHA(st.Commit) + " " + st.Message)
+	case st.Commit != "" || st.Tag != "":
+		commit = strings.TrimSpace(refLabel(st.Tag, st.Commit) + " " + st.Message)
 	case v.Schedule != "":
 		commit = v.Schedule + " · " + hubT(lang, "dp.scheduled")
 	}
@@ -872,7 +872,7 @@ func (h *hubServer) pageDeploy(w http.ResponseWriter, r *http.Request, who strin
 	}
 	if runs, err := h.store.runs(ctx, agent, deploy, 10); err == nil {
 		for i, run := range runs {
-			rr := runRow{Badge: badgeHTML(lang, run.Status), Commit: shortSHA(run.Commit), Took: run.Duration, By: run.Pusher, Current: i == 0}
+			rr := runRow{Badge: badgeHTML(lang, run.Status), Commit: refLabel(run.Tag, run.Commit), Took: run.Duration, By: run.Pusher, Current: i == 0}
 			if run.FinishedAt != nil {
 				rr.Ago = agoShort(lang, now.Sub(*run.FinishedAt))
 			}

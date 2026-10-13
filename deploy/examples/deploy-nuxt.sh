@@ -56,7 +56,12 @@ if [[ ! -d "$REPO/.git" ]]; then
 	step git clone --quiet "$REPO_URL" "$REPO"
 fi
 step git -C "$REPO" fetch --quiet --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
-COMMIT=$(git -C "$REPO" rev-parse --verify "${DEPLOY_COMMIT:-origin/$BRANCH}^{commit}")
+TARGET=${DEPLOY_COMMIT:-origin/$BRANCH}
+if [[ -n "${DEPLOY_TAG:-}" ]]; then # deploys with tags = "v*": the version pushed
+	step git -C "$REPO" fetch --quiet origin "+refs/tags/$DEPLOY_TAG:refs/tags/$DEPLOY_TAG"
+	TARGET=${DEPLOY_COMMIT:-refs/tags/$DEPLOY_TAG}
+fi
+COMMIT=$(git -C "$REPO" rev-parse --verify "$TARGET^{commit}")
 RELEASE="$RELEASES/$(date +%Y%m%d-%H%M%S)-${COMMIT:0:7}"
 echo "release $RELEASE (commit $COMMIT)"
 mkdir -p "$RELEASE"

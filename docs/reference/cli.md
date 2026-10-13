@@ -5,8 +5,8 @@ nimdeploy install                     install for the current user, no root need
 nimdeploy uninstall [--purge]         remove a user install
 nimdeploy send [flags] <url>          POST a signed JSON body to a generic webhook (no config needed)
 nimdeploy [flags] serve               run the webhook server (what the service does)
-nimdeploy [flags] run [-commit SHA] [-p NAME=VALUE]... [-f] <deploy>
-nimdeploy [flags] rollback [-to SHA] [-n] [-f] <deploy>
+nimdeploy [flags] run [-commit SHA | -tag v1.2.0] [-p NAME=VALUE]... [-f] <deploy>
+nimdeploy [flags] rollback [-to SHA|TAG] [-n] [-f] <deploy>
 nimdeploy [flags] mail test|send|retry
 nimdeploy [flags] pwpush [-views N] [-days N] [-note TEXT] < secret
 nimdeploy [flags] status [-json] [-wide] [-l key=value]... [deploy]
@@ -51,6 +51,7 @@ frontend  success              2026-09-29 13:10:02  1m12s     c93a11f  ana  2026
 ```bash
 nimdeploy run agency                  # deploy the branch head
 nimdeploy run -commit 9f1c2e7 agency  # a specific commit
+nimdeploy run -tag v1.2.0 agency-prod # a version (deploys with tags need one)
 nimdeploy run -f agency               # follow the log; exit code 1 if it fails
 nimdeploy run -p SERVICE=api services # params, validated like the webhook's
 ```
@@ -65,9 +66,11 @@ CI, and appear as `manual` in the history. Use it after creating a missing
 nimdeploy rollback -n shop         # show the commit it would deploy
 nimdeploy rollback -f shop         # deploy the last good commit and follow the log
 nimdeploy rollback -to 9f1c2e7 shop
+nimdeploy rollback -to v1.1.0 shop-prod   # a version, for deploys with tags
 ```
 
-See [Hooks, health checks and rollback](../guides/hooks-rollback.md#rollback).
+See [Hooks, health checks and rollback](../guides/hooks-rollback.md#rollback)
+and [production from tags](../guides/tags.md).
 
 ## mail and pwpush
 

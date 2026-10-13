@@ -97,6 +97,8 @@ func parseLog(path string) State {
 			st.Repository = val
 		case "branch":
 			st.Branch = val
+		case "tag":
+			st.Tag = val
 		case "commit":
 			st.Commit = val
 		case "pusher":

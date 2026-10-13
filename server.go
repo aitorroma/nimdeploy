@@ -292,20 +292,13 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			return
 		}
 
-		var match *pushInfo
-		var refs []string
-		for i, push := range ev.Pushes {
-			refs = append(refs, push.Ref)
-			if branch, ok := strings.CutPrefix(push.Ref, "refs/heads/"); ok && branch == d.Branch {
-				match = &ev.Pushes[i]
-			}
-		}
+		match, tag, why := d.matchPush(ev.Pushes)
 		if match == nil {
-			ignore(w, d, ev.Delivery, "ref "+strings.Join(refs, ", ")+" is not branch "+d.Branch)
+			ignore(w, d, ev.Delivery, why)
 			return
 		}
 		if match.Deleted {
-			ignore(w, d, ev.Delivery, "branch deleted")
+			ignore(w, d, ev.Delivery, map[bool]string{true: "tag deleted", false: "branch deleted"}[tag != ""])
 			return
 		}
 		params, ok := s.payloadRules(w, d, ev.Delivery, body)
@@ -320,6 +313,7 @@ func (s *Server) handleWebhook(d *DeployConfig) http.HandlerFunc {
 			Repository: ev.Repository,
 			Ref:        match.Ref,
 			Branch:     d.Branch,
+			Tag:        tag,
 			Commit:     match.Commit,
 			Message:    commitTitle(match.Message),
 			Pusher:     ev.Pusher,
@@ -400,6 +394,7 @@ func (s *Server) payloadRules(w http.ResponseWriter, d *DeployConfig, delivery s
 
 type manualRequest struct {
 	Commit string            `json:"commit"`
+	Tag    string            `json:"tag,omitempty"` // deploys with tags: the version to deploy
 	User   string            `json:"user"`
 	Params map[string]string `json:"params,omitempty"`
 	// Payload runs the deploy as if this body had arrived in a webhook
@@ -478,8 +473,12 @@ func (s *Server) handleManualDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		t.Params = params
 	}
+	if err := d.checkManualTag(req.Tag, req.Commit); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if d.Provider != providerGeneric && d.Provider != providerWooCommerce {
-		t.Ref, t.Branch = "refs/heads/"+d.Branch, d.Branch
+		d.setRef(&t, req.Tag)
 	}
 	s.submit(w, r, d, t)
 }
@@ -507,23 +506,22 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	commit := req.Commit
-	if commit == "" {
-		if commit, _, err = s.runner.RollbackTarget(d.Name); err != nil {
+	commit, tag := req.Commit, req.Tag
+	if commit == "" && tag == "" {
+		target, err := s.runner.RollbackTarget(d.Name)
+		if err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
+		commit, tag = target.Commit, target.Tag
+	} else if err := d.checkManualTag(tag, commit); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	log.Printf("deploy=%s rollback to %s requested by %s", d.Name, shortSHA(commit), firstNonEmpty(req.User, "api"))
-	s.submit(w, r, d, Trigger{
-		Source:     TriggerRollback,
-		Provider:   d.Provider,
-		Repository: d.Repository,
-		Ref:        "refs/heads/" + d.Branch,
-		Branch:     d.Branch,
-		Commit:     commit,
-		Pusher:     firstNonEmpty(req.User, "api"),
-	})
+	log.Printf("deploy=%s rollback to %s requested by %s", d.Name, refLabel(tag, commit), firstNonEmpty(req.User, "api"))
+	t := Trigger{Source: TriggerRollback, Provider: d.Provider, Repository: d.Repository, Commit: commit, Pusher: firstNonEmpty(req.User, "api")}
+	d.setRef(&t, tag)
+	s.submit(w, r, d, t)
 }
 
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, d *DeployConfig, t Trigger) {
