@@ -59,6 +59,8 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
 - **Central hub** in the same binary (`nimdeploy hub serve`): every server
   sends its deploys, signed, to one dashboard by client and environment, with
   an API and metrics. Data in libSQL; Docker Compose and a Helm chart included.
+  It's also an **MCP server with OAuth** (`/mcp`): ChatGPT, Claude or any
+  assistant connects by itself and reads how the deploys are doing.
 - **Ansible**: `[deploy.x.ansible]` runs `ansible-playbook` or `ansible-pull`
   with inventory, limit, tags and extra vars from validated webhook params, and
   summarises the PLAY RECAP; the `aitorroma.nimdeploy` collection triggers
