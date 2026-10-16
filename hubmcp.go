@@ -366,7 +366,9 @@ func mcpOverview(ctx context.Context, h *hubServer, base string, a mcpArgs) (any
 	now := time.Now()
 	agentCount := map[string]int{}
 	for _, ag := range agents {
-		agentCount[ag.stateText(now)]++
+		if ag.RevokedAt == "" {
+			agentCount[ag.stateText(now)]++
+		}
 	}
 	type day struct {
 		Day     string `json:"day"`
