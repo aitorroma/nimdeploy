@@ -22,7 +22,7 @@ func testHubStore(t *testing.T) *hubStore {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	for _, tbl := range []string{"events", "deploys", "agents", "hub_meta", "heartbeats", "commands", "notify_channels", "notify_rules", "notify_state"} {
+	for _, tbl := range []string{"events", "deploys", "agents", "hub_meta", "heartbeats", "commands", "notify_channels", "notify_rules", "notify_state", "oauth_clients", "oauth_grants", "oauth_tokens"} {
 		if err := db.Exec(ctx, sqlStmt{SQL: "DROP TABLE IF EXISTS " + tbl}); err != nil {
 			t.Fatal(err)
 		}

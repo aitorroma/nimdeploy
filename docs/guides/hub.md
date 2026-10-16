@@ -344,6 +344,40 @@ browser session or the proxy header.
         and on (agent, deploy) nimdeploy_hub_deploy_info{environment="production"}
 ```
 
+## AI assistants (MCP)
+
+The hub is an [MCP](https://modelcontextprotocol.io) server at `/mcp`, so an
+assistant such as ChatGPT, Claude or nimsting can answer "how are the
+deploys?" from the hub's data. It only reads: no tool runs, rolls back or
+changes anything.
+
+Add `https://hub.example.com/mcp` as a connector (custom MCP server) in the
+assistant. It finds the hub's OAuth metadata, registers itself and opens the
+hub in the browser: log in if asked, check the name and press **Allow**. The
+connection then appears in **Agents → AI connections**, where **Disconnect**
+cuts it at once.
+
+| Tool | |
+|---|---|
+| `overview` | deploys by status, agents online, failing deploys per client and environment, runs per day |
+| `attention` | what needs someone now: failures, agents offline, outdated agents, certificates expiring |
+| `list_deploys` | deploys and their current state; filter by client, environment, agent, status or text |
+| `get_deploy` | one deploy: state, last runs, commands from the dashboard and, if asked, the log tail |
+| `list_failures` | failed runs in the last hours, and whether each deploy has recovered |
+| `list_agents` | agents, their version, last heartbeat and deploys |
+| `recent_activity` | the latest events |
+
+- OAuth 2.1 with PKCE (S256) and dynamic client registration; redirects only
+  to `https` addresses, or `http` on the user's own machine.
+- Access tokens last an hour and are renewed with a refresh token (90 days,
+  a new one each time). The hub keeps only their SHA-256.
+- These tokens only open `/mcp`: not the dashboard, not the API.
+- Clients that take a fixed token can use `Authorization: Bearer
+  <NIMDEPLOY_HUB_TOKEN>` instead. Behind an authenticating proxy, the proxy
+  header works as for the dashboard.
+- Set `-public-url` when the hub is behind a proxy, so the OAuth metadata and
+  the links in the results carry the address people use.
+
 ## Command line
 
 ```text

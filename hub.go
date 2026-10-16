@@ -407,6 +407,7 @@ type hubServer struct {
 	// notifier sends notifications by the rules set in the dashboard; nil sends nothing.
 	notifier *hubNotifier
 	waiters  commandWaiters
+	oauth    oauthCodes // authorization codes waiting for /oauth/token
 }
 
 func (h *hubServer) routes() http.Handler {
@@ -466,6 +467,10 @@ func (h *hubServer) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/agents", h.bearerOnly(h.apiAddAgent))
 	mux.HandleFunc("DELETE /api/v1/agents/{name}", h.bearerOnly(h.apiRevokeAgent))
 	mux.HandleFunc("GET /metrics", h.api(h.handleMetrics))
+
+	h.oauthRoutes(mux)
+	mux.HandleFunc(mcpPath, h.handleMCP)
+	mux.HandleFunc("OPTIONS "+mcpPath, corsPreflight)
 	return hubHeaders(mux)
 }
 

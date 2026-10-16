@@ -987,7 +987,8 @@ func (h *hubServer) pageAgents(w http.ResponseWriter, r *http.Request, who strin
 		h.renderError(w, r, err)
 		return
 	}
-	h.page(w, r, who, "agents", d, "", "", []crumb{{Label: hubT(lang, "nav.agents")}}, map[string]any{"Cards": h.agentCards(r.Context(), lang, d.agents)})
+	h.page(w, r, who, "agents", d, "", "", []crumb{{Label: hubT(lang, "nav.agents")}}, map[string]any{"Cards": h.agentCards(r.Context(), lang, d.agents),
+		"MCPURL": h.baseURL(r) + mcpPath, "Grants": h.grantRows(r.Context(), lang)})
 }
 
 func (h *hubServer) pageActivity(w http.ResponseWriter, r *http.Request, who string) {

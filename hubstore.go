@@ -15,7 +15,7 @@ import (
 // hubStore keeps the hub's data in libSQL: agents (with their tokens), every
 // event they sent, and the current state of each deploy for the dashboard.
 
-const hubSchemaVersion = 5
+const hubSchemaVersion = 6
 
 var hubSchema = []string{
 	`CREATE TABLE IF NOT EXISTS hub_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -130,6 +130,30 @@ var hubMigrations = [][]string{
 		`ALTER TABLE agents ADD COLUMN cert_fp_prev TEXT`,
 		`ALTER TABLE agents ADD COLUMN cert_renewed_at TEXT`,
 		`ALTER TABLE agents ADD COLUMN cert_auto_renew INTEGER NOT NULL DEFAULT 0`,
+	},
+	{
+		`CREATE TABLE IF NOT EXISTS oauth_clients (
+			id            TEXT PRIMARY KEY,
+			name          TEXT,
+			redirect_uris TEXT NOT NULL,
+			created_at    TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS oauth_grants (
+			id         TEXT PRIMARY KEY,
+			client_id  TEXT NOT NULL,
+			name       TEXT NOT NULL,
+			created_by TEXT,
+			created_at TEXT NOT NULL,
+			last_used  TEXT,
+			revoked_at TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS oauth_tokens (
+			hash       TEXT PRIMARY KEY,
+			grant_id   TEXT NOT NULL,
+			kind       TEXT NOT NULL,
+			expires_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS oauth_tokens_grant ON oauth_tokens (grant_id)`,
 	},
 }
 
@@ -494,7 +518,8 @@ func (s *hubStore) prune(ctx context.Context, days int) error {
 	beats := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
 	return s.db.Exec(ctx, sqlStmt{SQL: `DELETE FROM events WHERE time < ?`, Args: []any{cutoff}},
 		sqlStmt{SQL: `DELETE FROM commands WHERE created_at < ?`, Args: []any{cutoff}},
-		sqlStmt{SQL: `DELETE FROM heartbeats WHERE minute < ?`, Args: []any{beats}})
+		sqlStmt{SQL: `DELETE FROM heartbeats WHERE minute < ?`, Args: []any{beats}},
+		sqlStmt{SQL: `DELETE FROM oauth_tokens WHERE expires_at < ?`, Args: []any{nowText()}})
 }
 
 // labelValues lists the values seen for a label key, for the dashboard filters.

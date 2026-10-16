@@ -339,7 +339,17 @@ const hubHTML = `
     <td class="nowrap">{{if .Commands}}<span class="on">{{.CommandsLabel}}</span>{{else}}<span class="muted">{{.CommandsLabel}}</span>{{end}}</td>{{end}}
     <td class="agactions">{{template "agent-foot" (foot $l .Name false)}}</td>
   </tr>{{end}}</tbody></table></div>{{else}}<div class="setup" style="margin:0">{{t $l "ag.none"}}</div>{{end}}
-</div></div>{{end}}
+</div></div>
+{{template "ai-conns" .}}{{end}}
+
+{{define "ai-conns"}}{{$l := .Lang}}<section class="panel" id="aiconns" style="margin-top:18px;padding:16px">
+<h2 style="margin:0 0 4px">{{t $l "ai.title"}}</h2><p class="muted" style="margin:0 0 12px">{{t $l "ai.sub"}}</p>
+<div class="field"><span class="lab">{{t $l "ai.url"}}</span><div class="secret"><code id="mcpurl">{{.Data.MCPURL}}</code><button class="btn small" type="button" data-copy="mcpurl">{{t $l "new.copy"}}</button></div><span class="hint">{{t $l "ai.url_hint"}}</span></div>
+{{if .Data.Grants}}<div class="scroll"><table class="agtable"><thead><tr><th>{{t $l "ai.col_name"}}</th><th>{{t $l "ai.col_from"}}</th><th>{{t $l "ai.col_since"}}</th><th>{{t $l "ai.col_used"}}</th><th><span class="sr-only">{{t $l "ag.col_actions"}}</span></th></tr></thead>
+<tbody>{{range .Data.Grants}}<tr><th scope="row"><b>{{.Name}}</b>{{if .By}}<div class="muted small">{{tf $l "ai.by" .By}}</div>{{end}}</th><td class="mono">{{.From}}</td><td class="nowrap">{{.Since}}</td><td class="nowrap">{{.Used}}</td>
+<td class="agactions"><div class="foot"><button class="btn small danger" type="button" hx-post="/ui/oauth/{{.ID}}/revoke" hx-confirm="{{tf $l "ai.confirm" .Name}}">{{t $l "ai.revoke"}}</button></div></td></tr>{{end}}</tbody></table></div>
+{{else}}<p class="muted" style="margin:0">{{t $l "ai.none"}}</p>{{end}}
+</section>{{end}}
 
 {{define "agent-foot"}}<div class="foot" id="foot-{{.Name}}">{{if .Confirm}}<span class="muted" style="font-size:12.5px;align-self:center">{{if eq .Lang "es"}}¿Revocar {{.Name}}? Sus eventos se rechazarán.{{else}}Revoke {{.Name}}? Its events will be refused.{{end}}</span>
   <button class="btn small danger" type="button" hx-post="/ui/agents/{{.Name}}/revoke">{{t .Lang "ag.confirm_revoke"}}</button>
