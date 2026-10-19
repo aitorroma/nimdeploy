@@ -56,8 +56,12 @@ type HelmConfig struct {
 	atomic bool
 }
 
-// HelmRelease is one release: [[deploy.<name>.helm.release]].
+// HelmRelease is one release: [[deploy.<name>.helm.release]]. Client,
+// Name, Namespace and Values may use ${PARAM}: one release whose customer
+// comes from the webhook (a sale) instead of a fixed list.
 type HelmRelease struct {
+	// Client is who the release is for, shown with its outcome.
+	Client    string            `toml:"client"`
 	Name      string            `toml:"name"`
 	Namespace string            `toml:"namespace"`
 	Values    []string          `toml:"values"`
@@ -76,6 +80,7 @@ type HelmSummary struct {
 // HelmResult is one release's outcome: upgraded, installed, failed,
 // rolled_back (upgraded, then undone by on_failure) or skipped (not reached).
 type HelmResult struct {
+	Client    string `json:"client,omitempty"`
 	Release   string `json:"release"`
 	Namespace string `json:"namespace"`
 	Outcome   string `json:"outcome"`
@@ -141,20 +146,28 @@ func (h *HelmConfig) validate(d *DeployConfig) error {
 	seen := map[string]bool{}
 	for i, rel := range h.Releases {
 		where := fmt.Sprintf("release %d: ", i+1)
-		if len(rel.Name) > 53 || !helmNameRe.MatchString(rel.Name) {
-			return fmt.Errorf("%sname %q must be lowercase letters, digits and - (at most 53)", where, rel.Name)
-		}
 		if rel.Namespace == "" {
 			return fmt.Errorf("%snamespace is required", where)
 		}
-		if len(rel.Namespace) > 63 || !helmNameRe.MatchString(rel.Namespace) {
-			return fmt.Errorf("%snamespace %q must be lowercase letters, digits and -", where, rel.Namespace)
+		refs := append([]string{rel.Client, rel.Name, rel.Namespace}, rel.Values...)
+		for _, s := range refs {
+			for _, m := range paramRefRe.FindAllStringSubmatch(s, -1) {
+				if _, ok := d.Params[m[1]]; !ok {
+					return fmt.Errorf("%s${%s} is not one of the params", where, m[1])
+				}
+			}
 		}
-		id := rel.Namespace + "/" + rel.Name
-		if seen[id] {
-			return fmt.Errorf("%s%s appears twice", where, id)
+		// Fixed names are checked now; the ones with ${PARAM}, on each run.
+		if !paramRefRe.MatchString(rel.Name + rel.Namespace) {
+			if err := checkRelease(rel); err != nil {
+				return fmt.Errorf("%s%v", where, err)
+			}
+			id := rel.Namespace + "/" + rel.Name
+			if seen[id] {
+				return fmt.Errorf("%s%s appears twice", where, id)
+			}
+			seen[id] = true
 		}
-		seen[id] = true
 		for _, v := range rel.Values {
 			if strings.TrimSpace(v) == "" {
 				return fmt.Errorf("%svalues has an empty entry", where)
@@ -170,6 +183,47 @@ func (h *HelmConfig) validate(d *DeployConfig) error {
 		}
 	}
 	return nil
+}
+
+func checkRelease(rel HelmRelease) error {
+	if len(rel.Name) > 53 || !helmNameRe.MatchString(rel.Name) {
+		return fmt.Errorf("name %q must be lowercase letters, digits and - (at most 53)", rel.Name)
+	}
+	if len(rel.Namespace) > 63 || !helmNameRe.MatchString(rel.Namespace) {
+		return fmt.Errorf("namespace %q must be lowercase letters, digits and - (at most 63)", rel.Namespace)
+	}
+	return nil
+}
+
+// resolveReleases fills in the params of every release for this run and
+// checks the result: a param can name a release, never escape it.
+func resolveReleases(h *HelmConfig, t Trigger) ([]HelmRelease, error) {
+	out := make([]HelmRelease, len(h.Releases))
+	seen := map[string]bool{}
+	for i, rel := range h.Releases {
+		r := rel
+		r.Client = strings.TrimSpace(expandParams(rel.Client, t.Params))
+		r.Name = expandParams(rel.Name, t.Params)
+		r.Namespace = expandParams(rel.Namespace, t.Params)
+		if err := checkRelease(r); err != nil {
+			return nil, fmt.Errorf("release %d: %v", i+1, err)
+		}
+		r.Values = nil
+		for _, v := range rel.Values {
+			x := expandParams(v, t.Params)
+			if x != v && (strings.Contains(x, "..") || strings.ContainsAny(strings.TrimSpace(x), "\n\r")) {
+				return nil, fmt.Errorf("release %d: values %q: a param can't leave the directory", i+1, x)
+			}
+			r.Values = append(r.Values, x)
+		}
+		id := r.Namespace + "/" + r.Name
+		if seen[id] {
+			return nil, fmt.Errorf("release %d: %s appears twice", i+1, id)
+		}
+		seen[id] = true
+		out[i] = r
+	}
+	return out, nil
 }
 
 // helmExpand replaces ${PARAM} and ${DEPLOY_TAG|COMMIT|BRANCH}.
@@ -286,14 +340,19 @@ func (r *Runner) helmRevision(d *DeployConfig, env []string, rel HelmRelease) (i
 // executeHelm upgrades every release in order and stops at the first failure.
 func (r *Runner) executeHelm(d *DeployConfig, t Trigger, env []string, f *os.File, logf func(string, ...any)) (status string, exitCode *int, errMsg string, sum *HelmSummary) {
 	h := d.Helm
+	releases, err := resolveReleases(h, t)
+	if err != nil {
+		logf("helm: %v", err)
+		return StatusFailed, nil, "helm: " + err.Error(), nil
+	}
 	sum = &HelmSummary{}
-	for _, rel := range h.Releases {
-		sum.Releases = append(sum.Releases, HelmResult{Release: rel.Name, Namespace: rel.Namespace, Outcome: "skipped"})
+	for _, rel := range releases {
+		sum.Releases = append(sum.Releases, HelmResult{Client: rel.Client, Release: rel.Name, Namespace: rel.Namespace, Outcome: "skipped"})
 	}
 	status = StatusSuccess
-	for i, rel := range h.Releases {
+	for i, rel := range releases {
 		res := &sum.Releases[i]
-		id := rel.Namespace + "/" + rel.Name
+		id := res.label()
 		fail := func(msg string) {
 			res.Outcome, res.Error = "failed", msg
 			status, errMsg = StatusFailed, "helm: "+id+": "+msg
@@ -312,7 +371,7 @@ func (r *Runner) executeHelm(d *DeployConfig, t Trigger, env []string, f *os.Fil
 			break
 		}
 		fmt.Fprintln(f)
-		logf("helm: [%d/%d] %s %s", i+1, len(h.Releases), h.Binary, strings.Join(args, " "))
+		logf("helm: [%d/%d]%s %s %s", i+1, len(releases), clientNote(rel.Client), h.Binary, strings.Join(args, " "))
 		errs := &helmErrors{}
 		st, code, msg := r.runCmdTee(d, env, f, h.Binary, args, errs)
 		exitCode = code
@@ -375,6 +434,21 @@ func (r *Runner) helmRollbackDone(d *DeployConfig, env []string, f *os.File, sum
 	}
 }
 
+func clientNote(c string) string {
+	if c == "" {
+		return ""
+	}
+	return " " + c + ":"
+}
+
+// label is a release in messages: "cliente1 (ns/name)" or "ns/name".
+func (r HelmResult) label() string {
+	if r.Client != "" {
+		return r.Client + " (" + r.Namespace + "/" + r.Release + ")"
+	}
+	return r.Namespace + "/" + r.Release
+}
+
 func (s *HelmSummary) count() {
 	s.Upgraded, s.Failed, s.RolledBack, s.Skipped = 0, 0, 0, 0
 	for _, r := range s.Releases {
@@ -395,7 +469,7 @@ func (s *HelmSummary) text() string {
 	parts := []string{fmt.Sprintf("%d upgraded", s.Upgraded)}
 	for _, r := range s.Releases {
 		if r.Outcome == "failed" {
-			parts = append(parts, "failed: "+r.Namespace+"/"+r.Release)
+			parts = append(parts, "failed: "+r.label())
 		}
 	}
 	if s.RolledBack > 0 {

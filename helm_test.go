@@ -200,18 +200,34 @@ func TestHelmArgsAndValidation(t *testing.T) {
 		t.Errorf("text %q", s.text())
 	}
 
+	// The customer from the webhook: one release named after it.
+	hc := &HelmConfig{Releases: []HelmRelease{{Client: "${CLIENTE}", Name: "proyecto", Namespace: "proyecto-${CLIENTE}", Values: []string{"instances/${CLIENTE}.yaml"}}}}
+	got2, err := resolveReleases(hc, Trigger{Params: []Param{{Name: "CLIENTE", Value: "cliente1"}}})
+	if err != nil || got2[0].Namespace != "proyecto-cliente1" || got2[0].Client != "cliente1" || got2[0].Values[0] != "instances/cliente1.yaml" {
+		t.Errorf("resolved %+v %v", got2, err)
+	}
+	for _, bad := range []string{"", "Cliente1", "../x", "a_b"} {
+		if _, err := resolveReleases(hc, Trigger{Params: []Param{{Name: "CLIENTE", Value: bad}}}); err == nil {
+			t.Errorf("client %q accepted", bad)
+		}
+	}
+	if l := (HelmResult{Client: "cliente1", Namespace: "proyecto-cliente1", Release: "proyecto"}).label(); l != "cliente1 (proyecto-cliente1/proyecto)" {
+		t.Errorf("label %q", l)
+	}
+
 	base := "[logging]\ndirectory = \"/tmp/x\"\n[deploy.a]\nschedule = \"@daily\"\n"
 	rel := "[[deploy.a.helm.release]]\nname = \"r\"\nnamespace = \"n\"\n"
 	cases := map[string]string{
 		"command = \"/bin/true\"\n[deploy.a.helm]\nchart = \"c\"\n" + rel: "not both",
-		"[deploy.a.helm]\n" + rel:                                                                      "chart is required",
-		"[deploy.a.helm]\nchart = \"c\"\n":                                                             "at least one",
-		"[deploy.a.helm]\nchart = \"c\"\non_failure = \"retry\"\n" + rel:                               "on_failure",
-		"[deploy.a.helm]\nchart = \"c\"\nset = { \"image.tag\" = \"${NOPE}\" }\n" + rel:                "not one of the params",
-		"[deploy.a.helm]\nchart = \"c\"\nset = { \"a b\" = \"x\" }\n" + rel:                            "value path",
-		"[deploy.a.helm]\nchart = \"c\"\n[[deploy.a.helm.release]]\nname = \"R\"\nnamespace = \"n\"\n": "lowercase",
-		"[deploy.a.helm]\nchart = \"c\"\n[[deploy.a.helm.release]]\nname = \"r\"\n":                    "namespace is required",
-		"[deploy.a.helm]\nchart = \"c\"\n" + rel + rel:                                                 "twice",
+		"[deploy.a.helm]\n" + rel:                                                                              "chart is required",
+		"[deploy.a.helm]\nchart = \"c\"\n":                                                                     "at least one",
+		"[deploy.a.helm]\nchart = \"c\"\non_failure = \"retry\"\n" + rel:                                       "on_failure",
+		"[deploy.a.helm]\nchart = \"c\"\nset = { \"image.tag\" = \"${NOPE}\" }\n" + rel:                        "not one of the params",
+		"[deploy.a.helm]\nchart = \"c\"\nset = { \"a b\" = \"x\" }\n" + rel:                                    "value path",
+		"[deploy.a.helm]\nchart = \"c\"\n[[deploy.a.helm.release]]\nname = \"R\"\nnamespace = \"n\"\n":         "lowercase",
+		"[deploy.a.helm]\nchart = \"c\"\n[[deploy.a.helm.release]]\nname = \"r\"\n":                            "namespace is required",
+		"[deploy.a.helm]\nchart = \"c\"\n" + rel + rel:                                                         "twice",
+		"[deploy.a.helm]\nchart = \"c\"\n[[deploy.a.helm.release]]\nname = \"r\"\nnamespace = \"n-${NOPE}\"\n": "not one of the params",
 	}
 	for extra, want := range cases {
 		path := filepath.Join(t.TempDir(), "c.toml")

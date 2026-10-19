@@ -871,7 +871,7 @@ func (h *hubServer) pageDeploy(w http.ResponseWriter, r *http.Request, who strin
 		// Each release as a box, in deploy order, with the ansible colours.
 		box := map[string]string{"upgraded": "changed", "installed": "changed", "failed": "failed", "rolled_back": "unreachable", "skipped": "ok"}
 		for _, rel := range hs.Releases {
-			data.Hosts = append(data.Hosts, hostBox{Host: rel.Namespace + "/" + rel.Release + " · " + rel.Outcome, Outcome: box[rel.Outcome]})
+			data.Hosts = append(data.Hosts, hostBox{Host: rel.label() + " · " + rel.Outcome, Outcome: box[rel.Outcome]})
 		}
 		data.HostsSub = hs.text()
 	}

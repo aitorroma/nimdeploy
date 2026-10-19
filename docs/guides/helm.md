@@ -30,11 +30,13 @@ namespace = "proyecto"
 values = ["deploy/helm/instances/proyecto.yaml"]
 
 [[deploy.proyecto.helm.release]]
+client = "cliente1"                          # shown with the outcome
 name = "proyecto"
 namespace = "proyecto-cliente1"
 values = ["deploy/helm/instances/cliente1.yaml"]
 
 [[deploy.proyecto.helm.release]]
+client = "cliente2"
 name = "proyecto"
 namespace = "proyecto-cliente2"
 values = ["deploy/helm/instances/cliente2.yaml"]
@@ -58,7 +60,7 @@ helm upgrade --install proyecto deploy/helm/proyecto --namespace proyecto \
 - With `on_failure = "rollback"`, the releases this run already upgraded go
   back to their previous revision too (`helm rollback <release> <revision>`),
   newest first. Releases this run installed for the first time stay.
-- The deploy fails with the helm error (`helm: proyecto-cliente1/proyecto:
+- The deploy fails with the helm error (`helm: cliente1 (proyecto-cliente1/proyecto):
   UPGRADE FAILED: ...`), and `after_failure` and the notifications run as
   usual.
 
@@ -87,12 +89,45 @@ to the cluster's API server with a kubeconfig. Either:
 - Secrets don't belong in `set` (they would be in the log and in helm's
   release history): keep them in Kubernetes Secrets the chart references.
 
-## A new release from a sale
+## The customer as a variable
 
-The same block with one release whose name and namespace come from the
-purchase is a provisioning flow: see [Stripe, Paddle and Lemon
-Squeezy](payments.md). Release names and namespaces must be lowercase
-letters, digits and `-` (DNS labels), which is also what nimdeploy checks.
+`client`, `name`, `namespace` and `values` of a release may use the deploy's
+params, so one release can be whichever customer the webhook names. That is
+a provisioning flow: a sale (see [Stripe, Paddle and Lemon
+Squeezy](payments.md)) or any JSON webhook installs that customer's release.
+
+```toml
+[deploy.alta]
+provider = "generic"
+path = "/hooks/alta"
+secret_env = "ALTA_WEBHOOK_SECRET"
+working_directory = "/srv/proyecto"
+
+[deploy.alta.params.CLIENTE]
+from = "customer.slug"
+match = "^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$"
+
+[deploy.alta.helm]
+chart = "deploy/helm/proyecto"
+create_namespace = true
+set = { "image.tag" = "v1.4.0", "tunnel.name" = "${CLIENTE}" }
+
+[[deploy.alta.helm.release]]
+client = "${CLIENTE}"
+name = "proyecto"
+namespace = "proyecto-${CLIENTE}"
+```
+
+```bash
+nimdeploy send -data '{"customer":{"slug":"cliente1"}}' https://deploy.example.com/hooks/alta
+```
+
+The result, the notification and the hub say `cliente1
+(proyecto-cliente1/proyecto)`. Whatever the param holds, the release name
+and namespace must still be lowercase letters, digits and `-` (DNS labels),
+a values file from a param can't contain `..`, and two releases can't end up
+the same: otherwise the run fails before helm starts. Validate the param
+itself too (`match`), as above.
 
 ## Options
 
@@ -109,14 +144,14 @@ letters, digits and `-` (DNS labels), which is also what nimdeploy checks.
 | `on_failure` | `stop` | `rollback`: also roll back the releases this run upgraded |
 | `binary` | `helm` | |
 | `args` | – | more arguments for every `helm upgrade`, as given |
-| `[[release]]` | at least one | `name`, `namespace`, and its own `values` and `set` |
+| `[[release]]` | at least one | `client` (who it is for, shown with the outcome), `name`, `namespace`, and its own `values` and `set`; all of them may use `${PARAM}` |
 
 ## What you see
 
-- **State and `/status`**: `helm.releases`, each with `release`,
+- **State and `/status`**: `helm.releases`, each with `client`, `release`,
   `namespace`, `outcome` (`upgraded`, `installed`, `failed`, `rolled_back`,
   `skipped`), `revision` and `previous`.
-- **Notifications**: `helm 3 releases: 1 upgraded, failed: proyecto-cliente1/proyecto, 1 not reached`.
+- **Notifications**: `helm 3 releases: 1 upgraded, failed: cliente1 (proyecto-cliente1/proyecto), 1 not reached`.
 - **Hub**: one box per release on the deploy's page; the MCP server returns
   the same summary to assistants.
 - **Metrics**: `nimdeploy_helm_releases_total{deploy,result}` and
