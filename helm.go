@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,10 @@ type HelmConfig struct {
 	Binary    string        `toml:"binary"` // default helm
 	Args      []string      `toml:"args"`   // more arguments for every upgrade, as given
 	Releases  []HelmRelease `toml:"release"`
+	// Discover adds the releases of this chart found in the cluster, after
+	// the listed ones: a customer installed by a sale is updated with the
+	// rest without editing the config.
+	Discover *HelmDiscover `toml:"discover"`
 
 	atomic bool
 }
@@ -66,6 +71,19 @@ type HelmRelease struct {
 	Namespace string            `toml:"namespace"`
 	Values    []string          `toml:"values"`
 	Set       map[string]string `toml:"set"`
+	// ReuseValues keeps the values the release already has
+	// (--reset-then-reuse-values); discovered releases always do.
+	ReuseValues bool `toml:"reuse_values"`
+	discovered  bool
+}
+
+// HelmDiscover finds releases with helm list --all-namespaces. They are
+// upgraded with the values they already have (--reset-then-reuse-values)
+// plus the shared values and set: they don't need a values file.
+type HelmDiscover struct {
+	Filter string `toml:"filter"` // release names, a regular expression (helm list --filter)
+	Chart  string `toml:"chart"`  // only releases of this chart (its name, without the version)
+	filter *regexp.Regexp
 }
 
 // HelmSummary is what a run did to each release, in order.
@@ -107,8 +125,20 @@ func (h *HelmConfig) validate(d *DeployConfig) error {
 	if strings.TrimSpace(h.Chart) == "" {
 		return errors.New("chart is required")
 	}
-	if len(h.Releases) == 0 {
-		return errors.New("at least one [[release]] is required")
+	if len(h.Releases) == 0 && h.Discover == nil {
+		return errors.New("at least one [[release]] (or [discover]) is required")
+	}
+	if dc := h.Discover; dc != nil {
+		if dc.Filter == "" && dc.Chart == "" {
+			return errors.New("discover needs filter or chart (never every release in the cluster)")
+		}
+		if dc.Filter != "" {
+			re, err := regexp.Compile(dc.Filter)
+			if err != nil {
+				return fmt.Errorf("discover.filter: %v", err)
+			}
+			dc.filter = re
+		}
 	}
 	switch h.OnFailure {
 	case "":
@@ -303,6 +333,9 @@ func helmUpgradeArgs(h *HelmConfig, rel HelmRelease, t Trigger) ([]string, error
 	if h.atomic {
 		args = append(args, "--atomic")
 	}
+	if rel.ReuseValues || rel.discovered {
+		args = append(args, "--reset-then-reuse-values")
+	}
 	for _, v := range append(append([]string(nil), h.Values...), rel.Values...) {
 		args = append(args, "--values", v)
 	}
@@ -337,10 +370,76 @@ func (r *Runner) helmRevision(d *DeployConfig, env []string, rel HelmRelease) (i
 	return st.Version, nil
 }
 
+// helmDiscover lists the cluster's releases that match [discover], by namespace.
+func (r *Runner) helmDiscover(d *DeployConfig, env []string) ([]HelmRelease, error) {
+	h := d.Helm
+	ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
+	defer cancel()
+	args := []string{"list", "--all-namespaces", "--output", "json", "--max", "0"}
+	if h.Discover.Filter != "" {
+		args = append(args, "--filter", h.Discover.Filter)
+	}
+	cmd := exec.CommandContext(ctx, h.Binary, append(args, helmGlobal(h)...)...)
+	cmd.Dir, cmd.Env = d.WorkingDirectory, env
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("helm list: %s", firstNonEmpty(lastLine(stderr.String()), err.Error()))
+	}
+	var list []struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Chart     string `json:"chart"` // name-version
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &list); err != nil {
+		return nil, fmt.Errorf("helm list: %v", err)
+	}
+	var out []HelmRelease
+	for _, l := range list {
+		if h.Discover.filter != nil && !h.Discover.filter.MatchString(l.Name) {
+			continue
+		}
+		if c := h.Discover.Chart; c != "" {
+			i := strings.LastIndex(l.Chart, "-")
+			if i < 0 || l.Chart[:i] != c {
+				continue
+			}
+		}
+		rel := HelmRelease{Name: l.Name, Namespace: l.Namespace, discovered: true}
+		if checkRelease(rel) == nil {
+			out = append(out, rel)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Namespace+"/"+out[i].Name < out[j].Namespace+"/"+out[j].Name
+	})
+	return out, nil
+}
+
 // executeHelm upgrades every release in order and stops at the first failure.
 func (r *Runner) executeHelm(d *DeployConfig, t Trigger, env []string, f *os.File, logf func(string, ...any)) (status string, exitCode *int, errMsg string, sum *HelmSummary) {
 	h := d.Helm
 	releases, err := resolveReleases(h, t)
+	if err == nil && h.Discover != nil {
+		var found []HelmRelease
+		if found, err = r.helmDiscover(d, env); err == nil {
+			listed := map[string]bool{}
+			for _, rel := range releases {
+				listed[rel.Namespace+"/"+rel.Name] = true
+			}
+			n := 0
+			for _, rel := range found {
+				if !listed[rel.Namespace+"/"+rel.Name] {
+					releases = append(releases, rel)
+					n++
+				}
+			}
+			logf("helm: discover found %d releases, %d not listed", len(found), n)
+			if len(releases) == 0 {
+				err = errors.New("discover found no releases")
+			}
+		}
+	}
 	if err != nil {
 		logf("helm: %v", err)
 		return StatusFailed, nil, "helm: " + err.Error(), nil

@@ -89,12 +89,45 @@ to the cluster's API server with a kubeconfig. Either:
 - Secrets don't belong in `set` (they would be in the log and in helm's
   release history): keep them in Kubernetes Secrets the chart references.
 
+## Every customer, without a list
+
+With a list, every new customer means editing the config and adding a values
+file. `[discover]` instead finds the chart's releases in the cluster
+(`helm list --all-namespaces`) and adds them after the listed ones, sorted
+by namespace:
+
+```toml
+[deploy.proyecto.helm]
+chart = "deploy/helm/proyecto"
+set = { "image.tag" = "${DEPLOY_TAG}" }
+
+[deploy.proyecto.helm.discover]
+chart = "proyecto"           # releases of this chart (and/or filter = "^proyecto$")
+
+[[deploy.proyecto.helm.release]]  # still first: the canary
+client = "interno"
+name = "proyecto"
+namespace = "proyecto"
+values = ["deploy/helm/instances/proyecto.yaml"]
+```
+
+A discovered release is upgraded with **the values it already has**
+(`--reset-then-reuse-values`), plus the shared `values` and `set`: only
+the version changes, and no values file is needed. Its values were stored by
+helm when it was installed, e.g. by the provisioning deploy below. A listed
+release can do the same with `reuse_values = true`.
+
+`discover` needs `chart` or `filter`: it never takes every release in the
+cluster. If it finds nothing and nothing is listed, the run fails.
+
 ## The customer as a variable
 
 `client`, `name`, `namespace` and `values` of a release may use the deploy's
 params, so one release can be whichever customer the webhook names. That is
 a provisioning flow: a sale (see [Stripe, Paddle and Lemon
-Squeezy](payments.md)) or any JSON webhook installs that customer's release.
+Squeezy](payments.md)) or any JSON webhook installs that customer's release,
+with its values from the params (no values file), and from then on
+`[discover]` updates it with the rest.
 
 ```toml
 [deploy.alta]
@@ -144,7 +177,8 @@ itself too (`match`), as above.
 | `on_failure` | `stop` | `rollback`: also roll back the releases this run upgraded |
 | `binary` | `helm` | |
 | `args` | – | more arguments for every `helm upgrade`, as given |
-| `[[release]]` | at least one | `client` (who it is for, shown with the outcome), `name`, `namespace`, and its own `values` and `set`; all of them may use `${PARAM}` |
+| `discover` | – | table: `chart` and/or `filter` (regular expression on release names); the releases found are upgraded after the listed ones, with their own values |
+| `[[release]]` | at least one, unless `discover` | `client` (who it is for, shown with the outcome), `name`, `namespace`, and its own `values` and `set`; all of them may use `${PARAM}`; `reuse_values = true` keeps the values it has |
 
 ## What you see
 

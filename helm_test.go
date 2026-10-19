@@ -28,6 +28,8 @@ upgrade)
   fi
   rev=$(cat "$f" 2>/dev/null || echo 0); echo $((rev+1)) > "$f"
   echo "Release \"$name\" has been upgraded. Happy Helming!";;
+list)
+  echo "$HELM_LIST";;
 rollback)
   f="$HELM_STATE/$4-$1"; rev=$(cat "$f"); echo $((rev+1)) > "$f"
   echo "Rollback was a success! Happy Helming!";;
@@ -163,6 +165,64 @@ func TestHelmExecutor(t *testing.T) {
 		if !strings.Contains(body, w) {
 			t.Errorf("metrics missing %s", w)
 		}
+	}
+}
+
+func TestHelmDiscover(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "helm")
+	os.WriteFile(bin, []byte(fakeHelm), 0o755)
+	state := filepath.Join(dir, "state")
+	os.Mkdir(state, 0o755)
+	for _, f := range []string{"proyecto-proyecto", "proyecto-cliente1-proyecto", "proyecto-cliente2-proyecto"} {
+		os.WriteFile(filepath.Join(state, f), []byte("1"), 0o644)
+	}
+	t.Setenv("HELM_STATE", state)
+	t.Setenv("HELM_FAIL", "")
+	t.Setenv("HELM_LIST", `[{"name":"proyecto","namespace":"proyecto-cliente2","chart":"proyecto-0.1.0"},
+{"name":"proyecto","namespace":"proyecto","chart":"proyecto-0.1.0"},
+{"name":"proyecto","namespace":"proyecto-cliente1","chart":"proyecto-0.1.0"},
+{"name":"proyecto","namespace":"otro","chart":"otro-chart-2.0.0"}]`)
+	e := newEnv(t, `true`, `[deploy.update]
+schedule = "@yearly"
+working_directory = "`+dir+`"
+timeout = "1m"
+[deploy.update.helm]
+chart = "./chart"
+binary = "`+bin+`"
+set = { "image.tag" = "2.0" }
+[deploy.update.helm.discover]
+chart = "proyecto"
+[[deploy.update.helm.release]]
+client = "interno"
+name = "proyecto"
+namespace = "proyecto"
+values = ["instances/proyecto.yaml"]
+`)
+	if _, err := e.runner.Submit("update", Trigger{Source: TriggerManual}); err != nil {
+		t.Fatal(err)
+	}
+	st := e.waitIdleName(t, "update")
+	h := st.Helm
+	if st.Status != StatusSuccess || h == nil || len(h.Releases) != 3 {
+		t.Fatalf("%+v %+v\n%s", st, h, readLatest(t, e, "update"))
+	}
+	// The listed one first (the canary), then the rest by namespace; not the other chart.
+	got := []string{h.Releases[0].label(), h.Releases[1].label(), h.Releases[2].label()}
+	if !reflect.DeepEqual(got, []string{"interno (proyecto/proyecto)", "proyecto-cliente1/proyecto", "proyecto-cliente2/proyecto"}) {
+		t.Errorf("order %q", got)
+	}
+	calls := string(mustRead(t, filepath.Join(state, "calls")))
+	if !strings.Contains(calls, "--namespace proyecto-cliente1 --wait --timeout 5m0s --atomic --reset-then-reuse-values --set-string image.tag=2.0") {
+		t.Errorf("discovered release not upgraded with its own values:\n%s", calls)
+	}
+	if strings.Contains(calls, "--namespace proyecto --wait --timeout 5m0s --atomic --reset-then-reuse-values") {
+		t.Error("the listed release reuses values without reuse_values")
+	}
+	path := filepath.Join(t.TempDir(), "c.toml")
+	os.WriteFile(path, []byte("[logging]\ndirectory = \"/tmp/x\"\n[deploy.a]\nschedule = \"@daily\"\n[deploy.a.helm]\nchart = \"c\"\n[deploy.a.helm.discover]\n"), 0o600)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "filter or chart") {
+		t.Errorf("discover of everything accepted: %v", err)
 	}
 }
 
