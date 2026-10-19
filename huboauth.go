@@ -19,7 +19,7 @@ import (
 )
 
 // The hub as an OAuth 2.1 authorization server for its own /mcp endpoint, as
-// the MCP spec asks: a client (ChatGPT, Claude, nimsting…) finds the metadata,
+// the MCP spec asks: a client (ChatGPT, Claude…) finds the metadata,
 // registers itself (Dynamic Client Registration), someone logged in to the
 // dashboard allows it, and the client gets a short-lived access token it
 // renews with a refresh token. Public clients with PKCE S256 only. The tokens

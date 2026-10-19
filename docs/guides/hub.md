@@ -347,7 +347,7 @@ browser session or the proxy header.
 ## AI assistants (MCP)
 
 The hub is an [MCP](https://modelcontextprotocol.io) server at `/mcp`, so an
-assistant such as ChatGPT, Claude or nimsting can answer "how are the
+assistant such as ChatGPT or Claude can answer "how are the
 deploys?" from the hub's data. It only reads: no tool runs, rolls back or
 changes anything.
 

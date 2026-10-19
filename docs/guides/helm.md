@@ -7,45 +7,45 @@ customer with its own values, all updated to the same version when a tag is
 pushed. The first release is your own: if it breaks, nobody else gets it.
 
 ```toml
-[deploy.nimsting]
+[deploy.proyecto]
 provider = "forgejo"
-path = "/hooks/nimsting"
-repository = "aitorroma/nimsting"
+path = "/hooks/proyecto"
+repository = "org/proyecto"
 tags = "v*"                                  # every production deploy is a version
-secret_env = "NIMSTING_WEBHOOK_SECRET"
-working_directory = "/srv/nimsting"          # a checkout of the repository
+secret_env = "PROYECTO_WEBHOOK_SECRET"
+working_directory = "/srv/proyecto"          # a checkout of the repository
 before = "git fetch --tags -q && git checkout -q $DEPLOY_TAG"
 timeout = "30m"
 
-[deploy.nimsting.helm]
-chart = "deploy/helm/nimsting"               # relative to working_directory
+[deploy.proyecto.helm]
+chart = "deploy/helm/proyecto"               # relative to working_directory
 kubeconfig = "/etc/rancher/k3s/k3s.yaml"
 set = { "image.tag" = "${DEPLOY_TAG}" }      # the image built for that tag
 timeout = "5m"                               # per release
 on_failure = "stop"                          # or "rollback"
 
-[[deploy.nimsting.helm.release]]             # first: the canary
-name = "nimsting"
-namespace = "nimsting"
-values = ["deploy/helm/instances/nimsting.yaml"]
+[[deploy.proyecto.helm.release]]             # first: the canary
+name = "proyecto"
+namespace = "proyecto"
+values = ["deploy/helm/instances/proyecto.yaml"]
 
-[[deploy.nimsting.helm.release]]
-name = "nimsting"
-namespace = "nimsting-xarcom"
-values = ["deploy/helm/instances/xarcom.yaml"]
+[[deploy.proyecto.helm.release]]
+name = "proyecto"
+namespace = "proyecto-cliente1"
+values = ["deploy/helm/instances/cliente1.yaml"]
 
-[[deploy.nimsting.helm.release]]
-name = "nimsting"
-namespace = "nimsting-tete"
-values = ["deploy/helm/instances/tete.yaml"]
+[[deploy.proyecto.helm.release]]
+name = "proyecto"
+namespace = "proyecto-cliente2"
+values = ["deploy/helm/instances/cliente2.yaml"]
 ```
 
 For each release nimdeploy runs, without a shell:
 
 ```text
-helm upgrade --install nimsting deploy/helm/nimsting --namespace nimsting \
+helm upgrade --install proyecto deploy/helm/proyecto --namespace proyecto \
   --kubeconfig /etc/rancher/k3s/k3s.yaml --wait --timeout 5m0s --atomic \
-  --values deploy/helm/instances/nimsting.yaml --set-string image.tag=v1.4.0
+  --values deploy/helm/instances/proyecto.yaml --set-string image.tag=v1.4.0
 ```
 
 ## What happens when one fails
@@ -58,7 +58,7 @@ helm upgrade --install nimsting deploy/helm/nimsting --namespace nimsting \
 - With `on_failure = "rollback"`, the releases this run already upgraded go
   back to their previous revision too (`helm rollback <release> <revision>`),
   newest first. Releases this run installed for the first time stay.
-- The deploy fails with the helm error (`helm: nimsting-xarcom/nimsting:
+- The deploy fails with the helm error (`helm: proyecto-cliente1/proyecto:
   UPGRADE FAILED: ...`), and `after_failure` and the notifications run as
   usual.
 
@@ -116,7 +116,7 @@ letters, digits and `-` (DNS labels), which is also what nimdeploy checks.
 - **State and `/status`**: `helm.releases`, each with `release`,
   `namespace`, `outcome` (`upgraded`, `installed`, `failed`, `rolled_back`,
   `skipped`), `revision` and `previous`.
-- **Notifications**: `helm 3 releases: 1 upgraded, failed: nimsting-xarcom/nimsting, 1 not reached`.
+- **Notifications**: `helm 3 releases: 1 upgraded, failed: proyecto-cliente1/proyecto, 1 not reached`.
 - **Hub**: one box per release on the deploy's page; the MCP server returns
   the same summary to assistants.
 - **Metrics**: `nimdeploy_helm_releases_total{deploy,result}` and

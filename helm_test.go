@@ -176,11 +176,11 @@ func mustRead(t *testing.T, path string) []byte {
 }
 
 func TestHelmArgsAndValidation(t *testing.T) {
-	h := &HelmConfig{Chart: "oci://r/nimsting", Version: "0.1.0", CreateNamespace: true, KubeContext: "prod",
+	h := &HelmConfig{Chart: "oci://r/app", Version: "0.1.0", CreateNamespace: true, KubeContext: "prod",
 		Set: map[string]string{"image.tag": "${DEPLOY_TAG}", "note": "a,b\\c"}, Args: []string{"--debug"}}
 	h.Timeout.Duration = time.Minute
 	got, err := helmUpgradeArgs(h, HelmRelease{Name: "x", Namespace: "y"}, Trigger{Tag: "v1.2.0"})
-	want := []string{"upgrade", "--install", "x", "oci://r/nimsting", "--namespace", "y", "--kube-context", "prod", "--create-namespace",
+	want := []string{"upgrade", "--install", "x", "oci://r/app", "--namespace", "y", "--kube-context", "prod", "--create-namespace",
 		"--version", "0.1.0", "--wait", "--timeout", "1m0s", "--set-string", "image.tag=v1.2.0", "--set-string", `note=a\,b\\c`, "--debug"}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("args\n got %q\nwant %q (%v)", got, want, err)
