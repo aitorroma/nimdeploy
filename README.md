@@ -65,6 +65,9 @@ against the release checksums; [other ways to install](https://nimdeploy.nimbox3
   with inventory, limit, tags and extra vars from validated webhook params, and
   summarises the PLAY RECAP; the `aitorroma.nimdeploy` collection triggers
   deploys from playbooks.
+- **Helm**: `[deploy.x.helm]` upgrades one or more releases in order (one per
+  customer, yours first) with `--wait --atomic`, stops at the first failure
+  (optionally rolling back the ones already done) and reports each release.
 - **Rules**: `when` operators (`match`, `not`, `gt`, `exists`...), `when_any`,
   and several deploys on one webhook path.
 - **TLS and mTLS** without a proxy, client certificates per webhook and per hub agent.

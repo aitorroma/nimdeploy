@@ -649,6 +649,8 @@ func kindOf(v hubView) string {
 	switch {
 	case v.State.Ansible != nil:
 		return "ansible"
+	case v.State.Helm != nil:
+		return "helm"
 	case v.Schedule != "" && v.Provider == providerSchedule:
 		return "schedule"
 	}
@@ -864,6 +866,14 @@ func (h *hubServer) pageDeploy(w http.ResponseWriter, r *http.Request, who strin
 			data.Hosts = append(data.Hosts, hostBox{Host: hr.Host, Outcome: hr.Outcome})
 		}
 		data.HostsSub = hubT(lang, "dp.hosts_sub", an.Hosts, an.HostsChanged, an.HostsFailed+an.HostsUnreachable)
+	}
+	if hs := st.Helm; hs != nil {
+		// Each release as a box, in deploy order, with the ansible colours.
+		box := map[string]string{"upgraded": "changed", "installed": "changed", "failed": "failed", "rolled_back": "unreachable", "skipped": "ok"}
+		for _, rel := range hs.Releases {
+			data.Hosts = append(data.Hosts, hostBox{Host: rel.Namespace + "/" + rel.Release + " · " + rel.Outcome, Outcome: box[rel.Outcome]})
+		}
+		data.HostsSub = hs.text()
 	}
 	if st.Status != StatusSuccess {
 		if evs, err := h.store.events(ctx, agent, deploy, hubEventDeployDone, 1); err == nil && len(evs) == 1 {

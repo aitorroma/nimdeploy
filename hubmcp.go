@@ -477,6 +477,7 @@ func mcpGetDeploy(ctx context.Context, h *hubServer, base string, a mcpArgs) (an
 		Error      string     `json:"error,omitempty"`
 		Phases     any        `json:"phases,omitempty"`
 		Ansible    any        `json:"ansible,omitempty"`
+		Helm       any        `json:"helm,omitempty"`
 	}
 	states, err := h.store.runs(ctx, v.Agent, v.Deploy, a.num("runs", 10, 50))
 	if err != nil {
@@ -491,6 +492,9 @@ func mcpGetDeploy(ctx context.Context, h *hubServer, base string, a mcpArgs) (an
 		}
 		if s.Ansible != nil {
 			r.Ansible = s.Ansible
+		}
+		if s.Helm != nil {
+			r.Helm = s.Helm
 		}
 		runs = append(runs, r)
 	}

@@ -104,6 +104,7 @@ nav:
       - Labels (client, environment): guides/labels.md
       - Central hub (Docker, Kubernetes): guides/hub.md
       - Ansible (playbooks, pull, collection): guides/ansible.md
+      - Helm and Kubernetes (releases in order): guides/helm.md
       - TLS and client certificates: guides/tls.md
       - Logs, traces and OpenTelemetry: guides/observability.md
   - Reverse proxy:

@@ -156,8 +156,10 @@ type DeployConfig struct {
 	Command          string `toml:"command"`
 	// Ansible runs ansible-playbook or ansible-pull instead of command.
 	Ansible *AnsibleConfig `toml:"ansible"`
-	Args    []string       `toml:"args"`
-	Env     []string       `toml:"env"`
+	// Helm runs helm upgrade --install for its releases instead of command.
+	Helm *HelmConfig `toml:"helm"`
+	Args []string    `toml:"args"`
+	Env  []string    `toml:"env"`
 
 	Timeout Duration `toml:"timeout"`
 	// WaitForCI lists GitHub Actions workflow names that must succeed for the
@@ -517,8 +519,14 @@ func (d *DeployConfig) validate() error {
 		if err := d.Ansible.validate(d); err != nil {
 			return fmt.Errorf("ansible: %w", err)
 		}
-	} else if d.Command == "" {
-		return fmt.Errorf("command (or [deploy.%s.ansible]) is required", d.Name)
+	}
+	if d.Helm != nil {
+		if err := d.Helm.validate(d); err != nil {
+			return fmt.Errorf("helm: %w", err)
+		}
+	}
+	if d.Ansible == nil && d.Helm == nil && d.Command == "" {
+		return fmt.Errorf("command (or [deploy.%s.ansible] or [deploy.%s.helm]) is required", d.Name, d.Name)
 	}
 	if d.WorkingDirectory != "" && !filepath.IsAbs(d.WorkingDirectory) {
 		return fmt.Errorf("working_directory must be an absolute path")

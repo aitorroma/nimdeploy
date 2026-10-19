@@ -28,6 +28,7 @@ type metrics struct {
 	waitBuckets map[string][]uint64
 	phases      map[[2]string][2]float64 // deploy, phase → count, seconds
 	ansibleRuns map[[2]string]uint64     // deploy, host outcome → hosts
+	helmRuns    map[[2]string]uint64     // deploy, release outcome → releases
 	otelDropped uint64
 }
 
@@ -52,6 +53,7 @@ func newMetrics() *metrics {
 		waitBuckets: map[string][]uint64{},
 		phases:      map[[2]string][2]float64{},
 		ansibleRuns: map[[2]string]uint64{},
+		helmRuns:    map[[2]string]uint64{},
 	}
 }
 
@@ -90,6 +92,17 @@ func (m *metrics) ansible(name string, s *AnsibleSummary) {
 	defer m.mu.Unlock()
 	for outcome, n := range map[string]int{"ok": s.HostsOk, "changed": s.HostsChanged, "unreachable": s.HostsUnreachable, "failed": s.HostsFailed} {
 		m.ansibleRuns[[2]string{name, outcome}] += uint64(n)
+	}
+}
+
+func (m *metrics) helm(name string, s *HelmSummary) {
+	if s == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range s.Releases {
+		m.helmRuns[[2]string{name, r.Outcome}]++
 	}
 }
 
@@ -360,6 +373,28 @@ func renderMetrics(cfg *Config, runner *Runner) string {
 			fmt.Fprintf(&b, "nimdeploy_ansible_last_run_hosts{deploy=%q,result=\"changed\"} %d\n", name, s.HostsChanged)
 			fmt.Fprintf(&b, "nimdeploy_ansible_last_run_hosts{deploy=%q,result=\"unreachable\"} %d\n", name, s.HostsUnreachable)
 			fmt.Fprintf(&b, "nimdeploy_ansible_last_run_hosts{deploy=%q,result=\"failed\"} %d\n", name, s.HostsFailed)
+		}
+	}
+	helmOutcomes := []string{"upgraded", "installed", "failed", "rolled_back", "skipped"}
+	family("nimdeploy_helm_releases_total", "counter", "Releases in Helm runs by outcome: upgraded, installed, failed, rolled_back, skipped.")
+	for _, name := range names {
+		if cfg.Deploy[name].Helm == nil {
+			continue
+		}
+		for _, outcome := range helmOutcomes {
+			fmt.Fprintf(&b, "nimdeploy_helm_releases_total{deploy=%q,result=%q} %d\n", name, outcome, m.helmRuns[[2]string{name, outcome}])
+		}
+	}
+	family("nimdeploy_helm_last_run_releases", "gauge", "Releases of the last Helm run by outcome.")
+	for _, name := range names {
+		if s := g[name].state.Helm; s != nil {
+			n := map[string]int{}
+			for _, r := range s.Releases {
+				n[r.Outcome]++
+			}
+			for _, outcome := range helmOutcomes {
+				fmt.Fprintf(&b, "nimdeploy_helm_last_run_releases{deploy=%q,result=%q} %d\n", name, outcome, n[outcome])
+			}
 		}
 	}
 	running, queued, oldest := runner.saturation()

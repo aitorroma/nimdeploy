@@ -161,7 +161,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `branch` | `main` | pushes to other branches are ignored. Not for `generic` |
 | `tags` | – | deploy on tags matching this pattern (`"v*"`) instead of on pushes to `branch`: [production from tags](../guides/tags.md). Git providers only |
 | `secret_env` | required | env var holding this deploy's webhook secret; startup fails if it is empty |
-| `command` | required, unless `ansible` | run directly, no shell |
+| `command` | required, unless `ansible` or `helm` | run directly, no shell |
 | `args` | – | arguments; for an inline script use `command = "/bin/bash"`, `args = ["-c", "..."]` |
 | `working_directory` | service's cwd | |
 | `env` | – | extra `KEY=VALUE` entries, e.g. `PATH=...` |
@@ -185,6 +185,7 @@ One table per deploy. The name is used in the CLI, the log directory and
 | `email` | – | table: `on`, `to`, `to_from`, `bcc`, `subject`, `template`, `secrets`, `once` ([details](../guides/email.md)) |
 | `labels` | – | table merged over `[labels]` for this deploy ([details](../guides/labels.md)) |
 | `ansible` | – | table: run `ansible-playbook`/`ansible-pull` instead of `command` ([details](../guides/ansible.md#options)) |
+| `helm` | – | table: run `helm upgrade --install` for its releases, in order, instead of `command` ([details](../guides/helm.md#options)) |
 | `when_any` | – | like `when`, but one condition is enough ([details](../guides/generic.md#when_any-one-of-them-is-enough)) |
 | `client_names` | – | only a client certificate with one of these names may call the webhook ([details](../guides/tls.md)) |
 | `payload_file` | `true` for generic, woocommerce and payments | pass the request body to the command as `DEPLOY_PAYLOAD_FILE` (mode `600`, deleted after the run) |

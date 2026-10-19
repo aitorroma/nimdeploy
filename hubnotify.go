@@ -225,6 +225,9 @@ func (n hubNotice) lines(lang string) []string {
 		if st.Ansible != nil {
 			out = append(out, "ansible: "+st.Ansible.text())
 		}
+		if st.Helm != nil {
+			out = append(out, "helm: "+st.Helm.text())
+		}
 	}
 	if n.Reason != "" && (n.State == nil || n.State.Error != n.Reason) {
 		out = append(out, hubT(lang, "nt.reason", n.Reason))

@@ -108,6 +108,8 @@ type State struct {
 	ExitCode   *int              `json:"exit_code,omitempty"`
 	// Ansible is the PLAY RECAP of an [ansible] deploy.
 	Ansible *AnsibleSummary `json:"ansible,omitempty"`
+	// Helm is what a [helm] deploy did to each release.
+	Helm *HelmSummary `json:"helm,omitempty"`
 	// Phases are the parts of the run and how long each took.
 	Phases []PhaseTiming `json:"phases,omitempty"`
 	Error  string        `json:"error,omitempty"`
@@ -461,6 +463,8 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 	if a := d.Ansible; a != nil {
 		logf("ansible=%s %s", a.Mode, firstNonEmpty(a.Playbook, a.URL))
+	} else if h := d.Helm; h != nil {
+		logf("helm=%s (%d releases)", h.Chart, len(h.Releases))
 	} else {
 		logf("command=%s", strings.Join(append([]string{d.Command}, d.Args...), " "))
 	}
@@ -475,7 +479,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 
 	status, errMsg := StatusSuccess, ""
 	var exitCode *int
-	var ansibleSum *AnsibleSummary
+	var res runResult
 	pl := &phaseLog{origin: firstTime(t.queuedAt, start)}
 	if !t.queuedAt.IsZero() && start.Sub(t.queuedAt) > 10*time.Millisecond {
 		pl.add("queue.wait", t.queuedAt, start.Sub(t.queuedAt), false)
@@ -506,7 +510,7 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 	if proceed {
 		notifier.CommitStatus(d, t, "pending", "Deploying")
-		status, exitCode, errMsg, ansibleSum = r.withHooks(d, t, env, f, path, logf, cf, sp, pl)
+		status, exitCode, errMsg, res = r.withHooks(d, t, env, f, path, logf, cf, sp, pl)
 	}
 
 	emailSpan := sp.child("email", spanClient)
@@ -565,7 +569,8 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	st.Duration = duration
 	st.ExitCode = exitCode
 	st.Error = errMsg
-	st.Ansible = ansibleSum
+	st.Ansible = res.ansible
+	st.Helm = res.helm
 	st.Phases = pl.list
 	recovered := false
 	if status != StatusSkipped {
@@ -587,7 +592,8 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	r.mu.Unlock()
 
 	r.metrics.finished(d.Name, status, finished.Sub(cmdStart))
-	r.metrics.ansible(d.Name, ansibleSum)
+	r.metrics.ansible(d.Name, res.ansible)
+	r.metrics.helm(d.Name, res.helm)
 	if r.hub != nil {
 		ev := hubEvent{Type: hubEventDeployDone, Deploy: d.Name, State: &final}
 		if n := r.hub.config().logTail; n > 0 && status != StatusSuccess {
@@ -603,11 +609,19 @@ func (r *Runner) run(d *DeployConfig, t Trigger, env []string, f *os.File, path 
 	}
 }
 
+// runResult is what an [ansible] or [helm] deploy reports besides its status.
+type runResult struct {
+	ansible *AnsibleSummary
+	helm    *HelmSummary
+}
+
 // withHooks runs before, the command, the health check and the after hooks.
-func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File, logPath string, logf func(string, ...any), cf CloudflareConfig, sp *span, pl *phaseLog) (status string, exitCode *int, errMsg string, sum *AnsibleSummary) {
+func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File, logPath string, logf func(string, ...any), cf CloudflareConfig, sp *span, pl *phaseLog) (status string, exitCode *int, errMsg string, res runResult) {
 	cmdName := "command" // the phase's name in the hub; the metric keeps "command"
 	if d.Ansible != nil {
 		cmdName = d.Ansible.Binary
+	} else if d.Helm != nil {
+		cmdName = d.Helm.Binary
 	}
 	phase := func(name string, start time.Time, failed bool) {
 		took := time.Since(start)
@@ -648,19 +662,27 @@ func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File,
 				hook("after_failure", d.AfterFailure)
 			}
 			if msg == errShutdownCanceled {
-				return StatusFailed, nil, msg, nil
+				return StatusFailed, nil, msg, runResult{}
 			}
-			return StatusFailed, nil, "before hook: " + msg, nil
+			return StatusFailed, nil, "before hook: " + msg, runResult{}
 		}
 	}
 	cmdStart := time.Now()
 	if d.Ansible != nil {
 		cs := sp.child(d.Ansible.Binary, spanInternal)
+		var sum *AnsibleSummary
 		status, exitCode, errMsg, sum = r.executeAnsible(d, t, withTrace(cs), f, logPath, logf)
+		res.ansible = sum
 		if sum != nil {
 			cs.set(spanAttr{"ansible.hosts", int64(sum.Hosts)}, spanAttr{"ansible.hosts.failed", int64(sum.HostsFailed)},
 				spanAttr{"ansible.hosts.unreachable", int64(sum.HostsUnreachable)}, spanAttr{"ansible.hosts.changed", int64(sum.HostsChanged)})
 		}
+		endCommandSpan(cs, status, exitCode, errMsg)
+	} else if d.Helm != nil {
+		cs := sp.child(d.Helm.Binary, spanInternal)
+		status, exitCode, errMsg, res.helm = r.executeHelm(d, t, withTrace(cs), f, logf)
+		cs.set(spanAttr{"helm.releases", int64(len(res.helm.Releases))}, spanAttr{"helm.releases.failed", int64(res.helm.Failed)},
+			spanAttr{"helm.releases.upgraded", int64(res.helm.Upgraded)})
 		endCommandSpan(cs, status, exitCode, errMsg)
 	} else {
 		cs := sp.child("command", spanInternal)
@@ -700,7 +722,7 @@ func (r *Runner) withHooks(d *DeployConfig, t Trigger, env []string, f *os.File,
 	} else if d.AfterFailure != "" && errMsg != errShutdownCanceled {
 		hook("after_failure", d.AfterFailure)
 	}
-	return status, exitCode, errMsg, sum
+	return status, exitCode, errMsg, res
 }
 
 // healthCheck waits for HealthURL to answer 2xx/3xx, up to HealthTimeout.
